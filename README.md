@@ -39,5 +39,5 @@
     - nlmeans.glsl
     - nlmeans_light.glsl
     - hdeband.glsl
-[haasn/libplacebo.org](https://libplacebo.org/custom-shaders/#full-example)
+- [haasn/libplacebo.org](https://libplacebo.org/custom-shaders/#full-example)
     - filmgrain.glsl
