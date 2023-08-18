@@ -5,7 +5,8 @@
 - [mpv-player/autoload](https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autoload.lua)
 - [mpv-player/autocrop](https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autocrop.lua)
 - [occivink/crop](https://github.com/occivink/mpv-scripts#croplua)
-- [po5/evafast](https://github.com/po5/evafast)
+- [po5/evafast](https://github.com/po5/evafast)\
+- [po5/memo](https://github.com/po5/memo)
 - [natural-harmonia-gropius/quality-menu](https://github.com/natural-harmonia-gropius/mpv-quality-menu)
 - [snylonue/slicing_copy](https://github.com/snylonue/mpv_slicing_copy)
 - [Eisa01/smartcopypaste](https://github.com/Eisa01/mpv-scripts#smartcopypaste)
