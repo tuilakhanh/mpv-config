@@ -1,8 +1,8 @@
---[[ 
+--[[
 
 streamsave.lua
-Version 0.23.2
-2023-5-21
+Version 0.24.0
+2023-8-21
 https://github.com/Sagnac/streamsave
 
 mpv script aimed at saving live streams and clipping online videos without encoding.
@@ -28,7 +28,7 @@ If you want to use with local files set cache=yes in mpv.conf
 
 Options are specified in ~~/script-opts/streamsave.conf
 
-Runtime changes to all user options are supported via the `script-opts` property by using mpv's `set` or
+Runtime updates to all user options are also supported via the `script-opts` property by using mpv's `set` or
 `change-list` input commands and the `streamsave-` prefix.
 
 General Options:
@@ -64,7 +64,7 @@ The default uses iterated step increments for every file output; i.e. file-1.mkv
 
 There are 4 other choices:
 
-output_label=timestamp will append Unix timestamps to the file name.
+output_label=timestamp will use a Unix timestamp for the file name.
 
 output_label=range will tag the file with the A-B loop range instead using the format HH.MM.SS
 e.g. file-[00.15.00 - 00.20.00].mkv
@@ -76,6 +76,12 @@ output_label=chapter uses the chapter title for the file name if using one of th
 The force_extension option allows you to force a preferred format and sidestep the automatic detection.
 If using this option it is recommended that a highly flexible container is used (e.g. Matroska).
 The format is specified as the extension including the dot (e.g. force_extension=.mkv).
+
+This option can be set at runtime with script-message by passing force as an argument; e.g.:
+script-message streamsave-extension .mkv force
+This changes the format for the current stream and all subsequently loaded streams
+(without `force` the setting is a one-shot setting for the present stream).
+
 If this option is set, `script-message streamsave-extension revert` will run the automatic determination at runtime;
 running this command again will reset the extension to what's specified in force_extension.
 
@@ -84,6 +90,7 @@ This is specified without double quote marks in streamsave.conf, e.g. force_titl
 The output_label is still used here and file overwrites are prevented if desired.
 Changing the filename title to the media-title is still possible at runtime by using the revert argument,
 as in the force_extension example.
+The secondary `force` argument is supported as well when passing an extension and not using `revert`.
 
 The range_marks option allows the script to set temporary chapters at A-B loop points.
 If chapters already exist they are stored and cleared whenever any A-B points are set.
@@ -114,20 +121,23 @@ Set piecewise=yes if you want to save a stream in parts automatically, useful fo
 e.g. saving long streams on slow systems. Set autoend to the duration preferred for each output file.
 This feature requires autostart=yes.
 
-mpv's script-message command can be used at runtime to set the dump mode, override the output title
-or file extension, change the save directory, or switch the output label.
+mpv's script-message command can be used to change the user options at runtime and
+temporarily override the output title or file extension.
+Boolean style options (yes/no) can be cycled by omitting the third argument.
 If you override the title, the file extension, or the directory, the revert argument can be used
 to set it back to the default value.
 
 Examples:
+script-message streamsave-marks
 script-message streamsave-mode continuous
+script-message streamsave-title "Global Title" force
 script-message streamsave-title "Example Title"
 script-message streamsave-extension .mkv
 script-message streamsave-extension revert
 script-message streamsave-path ~/streams
 script-message streamsave-label range
 
- ]]
+]]
 
 local options = require 'mp.options'
 local utils = require 'mp.utils'
@@ -138,19 +148,35 @@ local unpack = unpack or table.unpack
 -- default user options
 -- change these in streamsave.conf
 local opts = {
-    save_directory = [[.]],         -- output file directory
-    dump_mode = "ab",               -- <ab|current|continuous|chapter|segments>
-    output_label = "increment",     -- <increment|range|timestamp|overwrite|chapter>
-    force_extension = "no",         -- <no|.ext> extension will be .ext if set
-    force_title = "no",             -- <no|title> custom title used for the filename
-    range_marks = false,            -- <yes|no> set chapters at A-B loop points?
-    track_packets = false,          -- <yes|no> track HLS packet drops
-    autostart = false,              -- <yes|no> automatically dump cache at start?
-    autoend = "no",                 -- <no|HH:MM:SS> cache time to stop at
-    hostchange = false,             -- <yes|no> use if the host changes mid stream
-    on_demand = false,              -- <yes|no> hostchange suboption, instant reloads
-    quit = "no",                    -- <no|HH:MM:SS> quits player at specified time
-    piecewise = false,              -- <yes|no> writes stream in parts with autoend
+    save_directory  = [[.]],       -- output file directory
+    dump_mode       = "ab",        -- <ab|current|continuous|chapter|segments>
+    output_label    = "increment", -- <increment|range|timestamp|overwrite|chapter>
+    force_extension = "no",        -- <no|.ext> extension will be .ext if set
+    force_title     = "no",        -- <no|title> custom title used for the filename
+    range_marks     = false,       -- <yes|no> set chapters at A-B loop points?
+    track_packets   = false,       -- <yes|no> track HLS packet drops
+    autostart       = false,       -- <yes|no> automatically dump cache at start?
+    autoend         = "no",        -- <no|HH:MM:SS> cache time to stop at
+    hostchange      = false,       -- <yes|no> use if the host changes mid stream
+    on_demand       = false,       -- <yes|no> hostchange suboption, instant reloads
+    quit            = "no",        -- <no|HH:MM:SS> quits player at specified time
+    piecewise       = false,       -- <yes|no> writes stream in parts with autoend
+}
+
+local modes = {
+    ab = true,
+    current = true,
+    continuous = true,
+    chapter = true,
+    segments = true,
+}
+
+local labels = {
+    increment = true,
+    range = true,
+    timestamp = true,
+    overwrite = true,
+    chapter = true,
 }
 
 -- for internal use
@@ -202,9 +228,29 @@ local track = {
     suspend,         -- suspension interval on track-list changes
 }
 
+local update = {}       -- option update functions, {mode, label, on_demand} ⊈ update
 local segments = {}     -- chapter segments set for writing
 local chapter_list = {} -- initial chapter list
 local ab_chapters = {}  -- A-B loop point chapters
+
+local webm = {
+    vp8 = true,
+    vp9 = true,
+    av1 = true,
+    opus = true,
+    vorbis = true,
+    none = true,
+}
+
+local mp4 = {
+    h264 = true,
+    hevc = true,
+    av1 = true,
+    mp3 = true,
+    flac = true,
+    aac = true,
+    none = true,
+}
 
 local title_change
 local container
@@ -226,23 +272,13 @@ local function convert_time(value)
 end
 
 local function validate_opts()
-    if opts.output_label ~= "increment" and
-       opts.output_label ~= "range" and
-       opts.output_label ~= "timestamp" and
-       opts.output_label ~= "overwrite" and
-       opts.output_label ~= "chapter"
-    then
-        msg.error("Invalid output_label '" .. opts.output_label .. "'")
-        opts.output_label = "increment"
-    end
-    if opts.dump_mode ~= "ab" and
-       opts.dump_mode ~= "current" and
-       opts.dump_mode ~= "continuous" and
-       opts.dump_mode ~= "chapter" and
-       opts.dump_mode ~= "segments"
-    then
+    if not modes[opts.dump_mode] then
         msg.error("Invalid dump_mode '" .. opts.dump_mode .. "'")
         opts.dump_mode = "ab"
+    end
+    if not labels[opts.output_label] then
+        msg.error("Invalid output_label '" .. opts.output_label .. "'")
+        opts.output_label = "increment"
     end
     if opts.autoend ~= "no" then
         if not cache.part then
@@ -264,55 +300,78 @@ local function validate_opts()
     end
 end
 
-local function update_opts(changed)
-    validate_opts()
+function update.save_directory()
     -- expand mpv meta paths (e.g. ~~/directory)
     file.path = mp.command_native({"expand-path", opts.save_directory})
+end
+
+function update.force_title()
     if opts.force_title ~= "no" then
         file.title = opts.force_title
-    elseif changed["force_title"] then
+    elseif file.title then
         title_change(_, mp.get_property("media-title"), true)
     end
+end
+
+function update.force_extension()
     if opts.force_extension ~= "no" then
         file.ext = opts.force_extension
-    elseif changed["force_extension"] then
+    else
         container(_, _, true)
     end
-    if changed["range_marks"] then
-        if opts.range_marks then
-            chapter_points()
-        else
-            if not get_chapters() then
-                mp.set_property_native("chapter-list", chapter_list)
-            end
-            ab_chapters = {}
+end
+
+function update.range_marks()
+    if opts.range_marks then
+        chapter_points()
+    else
+        if not get_chapters() then
+            mp.set_property_native("chapter-list", chapter_list)
         end
+        ab_chapters = {}
     end
-    if changed["autoend"] then
-        cache.endsec = convert_time(opts.autoend)
-        observe_cache()
-    end
-    if changed["autostart"] then
-        observe_cache()
-    end
-    if changed["hostchange"] then
-        observe_tracks(opts.hostchange)
-    end
-    if changed["quit"] then
-        autoquit()
-    end
-    if changed["piecewise"] and not opts.piecewise then
+end
+
+function update.autoend()
+    cache.endsec = convert_time(opts.autoend)
+    observe_cache()
+end
+
+function update.autostart()
+    observe_cache()
+end
+
+function update.hostchange()
+    observe_tracks(opts.hostchange)
+end
+
+function update.quit()
+    autoquit()
+end
+
+function update.piecewise()
+    if not opts.piecewise then
         cache.part = 0
-    elseif changed["piecewise"] then
+    else
         cache.endsec = convert_time(opts.autoend)
     end
-    if changed["track_packets"] then
-        packet_events(opts.track_packets)
+end
+
+function update.track_packets()
+    packet_events(opts.track_packets)
+end
+
+local function update_opts(changed)
+    validate_opts()
+    for opt, _ in pairs(changed) do
+        if update[opt] then
+            update[opt]()
+        end
     end
 end
 
 options.read_options(opts, "streamsave", update_opts)
-update_opts{}
+update_opts{force_title = true, save_directory = true}
 
 -- dump mode switching
 local function mode_switch(value)
@@ -355,40 +414,38 @@ local function mode_switch(value)
     end
 end
 
+local function sanitize(title)
+    -- Replacement of reserved file name characters on Windows
+    return title:gsub("[\\/:*?\"<>|]", ".")
+end
+
 -- Set the principal part of the file name using the media title
 function title_change(_, media_title, req)
-    if opts.force_title ~= "no" and not req then
-        file.title = opts.force_title
+    if opts.force_title ~= "no" and not req or not media_title then
         return end
-    if media_title then
-        -- Replacement of reserved file name characters on Windows
-        file.title = media_title:gsub("[\\/:*?\"<>|]", ".")
-        file.oldtitle = nil
-    end
+    file.title = sanitize(media_title)
+    file.oldtitle = nil
 end
 
 -- Determine container for standard formats
 function container(_, _, req)
-    local audio = mp.get_property("audio-codec-name")
-    local video = mp.get_property("video-format")
+    local audio = mp.get_property("audio-codec-name", "none")
+    local video = mp.get_property("video-format", "none")
     local file_format = mp.get_property("file-format")
     if not file_format then
         reset()
         observe_tracks()
+        file.ext = nil
         return end
     if opts.force_extension ~= "no" and not req then
         file.ext = opts.force_extension
         observe_cache()
+        observe_tracks()
         return end
-    if string.match(file_format, "mp4")
-       or ((video == "h264" or video == "av1" or not video) and
-           (audio == "aac" or not audio))
-    then
-        file.ext = ".mp4"
-    elseif (video == "vp8" or video == "vp9" or not video)
-       and (audio == "opus" or audio == "vorbis" or not audio)
-    then
+    if webm[video] and webm[audio] then
         file.ext = ".webm"
+    elseif mp4[video] and mp4[audio] then
+        file.ext = ".mp4"
     else
         file.ext = ".mkv"
     end
@@ -397,9 +454,20 @@ function container(_, _, req)
     file.oldext = nil
 end
 
-local function format_override(ext)
+local function cycle_bool_on_missing_arg(arg, opt)
+    return arg or (not opt and "yes" or "no")
+end
+
+local function format_override(ext, force)
     ext = ext or file.ext
     file.oldext = file.oldext or file.ext
+    if force == "force" then
+        opts.force_extension = ext
+        file.ext = opts.force_extension
+        print("file extension globally forced to " .. file.ext)
+        mp.osd_message("streamsave: file extension globally forced to " .. file.ext)
+        return
+    end
     if ext == "revert" and file.ext == opts.force_extension then
         container(_, _, true)
     elseif ext == "revert" and opts.force_extension ~= "no" then
@@ -413,9 +481,17 @@ local function format_override(ext)
     mp.osd_message("streamsave: file extension changed to " .. file.ext)
 end
 
-local function title_override(title)
+local function title_override(title, force)
     title = title or file.title
     file.oldtitle = file.oldtitle or file.title
+    if force == "force" then
+        opts.force_title = title
+        file.title = opts.force_title
+        opts.output_label = "increment"
+        print("title globally forced to " .. file.title)
+        mp.osd_message("streamsave: title globally forced to " .. file.title)
+        return
+    end
     if title == "revert" and file.title == opts.force_title then
         title_change(_, mp.get_property("media-title"), true)
     elseif title == "revert" and opts.force_title ~= "no" then
@@ -438,7 +514,7 @@ local function path_override(value)
         opts.save_directory = value
     end
     file.path = mp.command_native({"expand-path", opts.save_directory})
-    print("Output directory changed to " .. opts.save_directory)
+    print("Output directory changed to " .. file.path)
     mp.osd_message("streamsave: directory changed to " .. opts.save_directory)
 end
 
@@ -463,7 +539,8 @@ local function label_override(value)
 end
 
 local function marks_override(value)
-    if not value or value == "no" then
+    value = cycle_bool_on_missing_arg(value, opts.range_marks)
+    if value == "no" then
         opts.range_marks = false
         if not get_chapters() then
             mp.set_property_native("chapter-list", chapter_list)
@@ -483,7 +560,8 @@ local function marks_override(value)
 end
 
 local function autostart_override(value)
-    if not value or value == "no" then
+    value = cycle_bool_on_missing_arg(value, opts.autostart)
+    if value == "no" then
         opts.autostart = false
         print("Autostart disabled")
         mp.osd_message("streamsave: autostart disabled")
@@ -510,8 +588,8 @@ end
 
 local function hostchange_override(value)
     local hostchange = opts.hostchange
-    value = value == "cycle" and (not opts.hostchange and "yes" or "no") or value
-    if not value or value == "no" then
+    value = cycle_bool_on_missing_arg(value, hostchange)
+    if value == "no" then
         opts.hostchange = false
         print("Hostchange disabled")
         mp.osd_message("streamsave: hostchange disabled")
@@ -526,7 +604,7 @@ local function hostchange_override(value)
         print("Hostchange: On Demand " .. status)
         mp.osd_message("streamsave: hostchange on_demand " .. status)
     else
-        local allowed = "yes, no, cycle, or on_demand"
+        local allowed = "yes, no, or on_demand"
         msg.error("Invalid input '" .. value .. "'. Use " .. allowed .. ".")
         mp.osd_message("streamsave: invalid input; use " .. allowed)
         return
@@ -545,7 +623,8 @@ local function quit_override(value)
 end
 
 local function piecewise_override(value)
-    if not value or value == "no" then
+    value = cycle_bool_on_missing_arg(value, opts.piecewise)
+    if value == "no" then
         opts.piecewise = false
         cache.part = 0
         print("Piecewise dumping disabled")
@@ -563,10 +642,8 @@ end
 
 local function packet_override(value)
     local track_packets = opts.track_packets
-    if value == "cycle" then
-        value = not track_packets and "yes" or "no"
-    end
-    if not value or value == "no" then
+    value = cycle_bool_on_missing_arg(value, track_packets)
+    if value == "no" then
         opts.track_packets = false
         print("Track packets disabled")
         mp.osd_message("streamsave: track packets disabled")
@@ -600,8 +677,9 @@ local function loop_range()
     return loop.range
 end
 
-local function set_name(label)
-    return file.path .. "/" .. file.title .. label .. file.ext
+local function set_name(label, title)
+    title = title or file.title
+    return file.path .. "/" .. title .. label .. file.ext
 end
 
 local function increment_filename()
@@ -637,25 +715,83 @@ local function range_stamp(mode)
     end
 end
 
+local function get_ranges()
+    local cache_state = mp.get_property_native("demuxer-cache-state", {})
+    local ranges = cache_state["seekable-ranges"] or {}
+    return ranges, cache_state
+end
+
+local function get_cache_start()
+    local seekable_ranges = get_ranges()
+    local seekable_starts = {0}
+    for i, range in ipairs(seekable_ranges) do
+        seekable_starts[i] = range["start"] or 0
+    end
+    return math.min(unpack(seekable_starts))
+end
+
+local function adjust_initial_chapter(chapter_list)
+    if not next(chapter_list) then
+        return
+    end
+    local threshold = 0.1
+    local set_zeroth = chapter_list[1]["time"] > threshold
+    local cache_start = get_cache_start()
+    if not set_zeroth and cache_start <= threshold then
+        chapter_list[1]["time"] = cache_start
+    end
+    return set_zeroth, cache_start
+end
+
+local function cache_check(k)
+    local seekable_ranges, cache_state = get_ranges()
+    local chapter = segments[k]
+    local chapt_start, chapt_end = chapter["start"], chapter["end"]
+    local chapter_cached = false
+    if chapt_end == "no" then
+        chapt_end = chapt_start
+    end
+    for _, range in ipairs(seekable_ranges) do
+        if chapt_start >= range["start"] and chapt_end <= range["end"] then
+            chapter_cached = true
+            break
+        end
+    end
+    if k == 1 and not chapter_cached then
+        segments = {}
+        msg.error("chapter must be fully cached")
+    end
+    return chapter_cached, seekable_ranges, cache_state
+end
+
+local function fully_cached(k)
+    local up_to_end, ranges, cache_state = cache_check(k)
+    return cache_state["bof-cached"] and up_to_end and #ranges == 1
+end
+
 local function write_chapter(chapter)
-    get_chapters()
-    if chapter_list[chapter] or chapter == 0 then
+    local chapter_list = mp.get_property_native("chapter-list", {})
+    local set_zeroth, cache_start = adjust_initial_chapter(chapter_list)
+    local zeroth_chapter = chapter == 0 and set_zeroth
+    if chapter_list[chapter] or zeroth_chapter then
         segments[1] = {
-            ["start"] = chapter == 0 and 0 or chapter_list[chapter]["time"],
+            ["start"] = zeroth_chapter and cache_start
+                        or chapter_list[chapter]["time"],
             ["end"] = chapter_list[chapter + 1]
                       and chapter_list[chapter + 1]["time"]
-                      or mp.get_property_number("duration", "no"),
-            ["title"] = chapter .. ". " .. (chapter ~= 0
+                      or "no",
+            ["title"] = chapter .. ". " .. (not zeroth_chapter
                         and chapter_list[chapter]["title"] or file.title)
         }
         print("Writing chapter " .. chapter .. " ....")
-        return true
+        return cache_check(1)
     else
-        msg.error("Chapter not found.")
+        msg.error("Chapter " .. chapter .. " not found.")
     end
 end
 
-local function extract_segments(n)
+local function extract_segments(n, chapter_list)
+    local set_zeroth, cache_start = adjust_initial_chapter(chapter_list)
     for i = 1, n - 1 do
         segments[i] = {
             ["start"] = chapter_list[i]["time"],
@@ -663,19 +799,21 @@ local function extract_segments(n)
             ["title"] = i .. ". " .. (chapter_list[i]["title"] or file.title)
         }
     end
-    if chapter_list[1]["time"] ~= 0 then
+    if set_zeroth then
         table.insert(segments, 1, {
-            ["start"] = 0,
+            ["start"] = cache_start,
             ["end"] = chapter_list[1]["time"],
             ["title"] = "0. " .. file.title
         })
     end
     table.insert(segments, {
         ["start"] = chapter_list[n]["time"],
-        ["end"] = mp.get_property_number("duration", "no"),
+        ["end"] = "no",
         ["title"] = n .. ". " .. (chapter_list[n]["title"] or file.title)
     })
-    print("Writing out all " .. #segments .. " chapters to separate files ....")
+    local k = #segments
+    print("Writing out all " .. k .. " chapters to separate files ....")
+    return k
 end
 
 local function write_set(mode, file_name, file_pos, quiet)
@@ -746,14 +884,20 @@ local function cache_write(mode, quiet, chapter)
     range_flip()
     -- set the output list for the chapter modes
     if mode == "segments" and not segments[1] then
-        get_chapters()
+        local chapter_list = mp.get_property_native("chapter-list", {})
         local n = #chapter_list
         if n > 0 then
-            extract_segments(n)
+            local k = extract_segments(n, chapter_list)
+            if not fully_cached(k) then
+                segments = {}
+                msg.error("segments mode: stream must be fully cached")
+                return
+            end
             quiet = true
             mp.osd_message("Cache dumping started.")
         else
-            mode = "continuous"
+            msg.error("segments mode: stream has no chapters")
+            return
         end
     elseif mode == "chapter" and not segments[1] then
         chapter = chapter or mp.get_property_number("chapter", -1) + 1
@@ -767,12 +911,12 @@ local function cache_write(mode, quiet, chapter)
     elseif opts.output_label == "range" then
         range_stamp(mode)
     elseif opts.output_label == "timestamp" then
-        file.name = set_name(-os.time())
+        file.name = set_name(os.time(), "")
     elseif opts.output_label == "overwrite" then
         file.name = set_name("")
     elseif opts.output_label == "chapter" then
         if segments[1] then
-            file.name = file.path .. "/" .. segments[1]["title"] .. file.ext
+            file.name = set_name(sanitize(segments[1]["title"]), "")
         else
             increment_filename()
         end
@@ -913,8 +1057,7 @@ end
 
 function get_seekable_cache(prop, range_check)
     -- use the seekable part of the cache for more accurate timestamps
-    local cache_state = mp.get_property_native("demuxer-cache-state", {})
-    local seekable_ranges = cache_state["seekable-ranges"] or {}
+    local seekable_ranges, cache_state = get_ranges()
     if prop then
         if range_check ~= false and
            (#seekable_ranges == 0
@@ -1177,7 +1320,6 @@ useful if e.g. --script-opts=ytdl_hook-all_formats=yes
 or script-opts=ytdl_hook-use_manifests=yes ]]
 mp.observe_property("audio-codec-name", "string", container)
 mp.observe_property("video-format", "string", container)
-mp.observe_property("file-format", "string", container)
 
 --[[ Loading chapters can be slow especially if they're passed from
 an external file, so make sure existing chapters are not overwritten
