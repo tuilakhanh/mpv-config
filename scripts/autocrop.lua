@@ -65,14 +65,14 @@ require "mp.msg"
 require 'mp.options'
 
 local options = {
-    auto = true,
+    auto = false,
     auto_delay = 4,
     detect_limit = "24/255",
     detect_round = 2,
     detect_min_ratio = 0.5,
     detect_seconds = 1,
     suppress_osd = false,
-    use_vo_crop = false,
+    use_vo_crop = true,
 }
 read_options(options)
 
