@@ -1,8 +1,8 @@
 --[[
 
 streamsave.lua
-Version 0.24.0
-2023-8-21
+Version 0.24.1
+2023-8-29
 https://github.com/Sagnac/streamsave
 
 mpv script aimed at saving live streams and clipping online videos without encoding.
@@ -33,7 +33,8 @@ Runtime updates to all user options are also supported via the `script-opts` pro
 
 General Options:
 
-save_directory sets the output file directory. Don't use quote marks or a trailing slash when specifying paths here.
+save_directory sets the output file directory. Paths with or without a trailing slash are accepted.
+Don't use quote marks when specifying paths here.
 Example: save_directory=C:\User Directory
 mpv double tilde paths ~~/ and home path shortcuts ~/ are also accepted.
 By default files are dumped in the current directory.
@@ -148,7 +149,7 @@ local unpack = unpack or table.unpack
 -- default user options
 -- change these in streamsave.conf
 local opts = {
-    save_directory  = [[.]],       -- output file directory
+    save_directory  = [[]],        -- output file directory
     dump_mode       = "ab",        -- <ab|current|continuous|chapter|segments>
     output_label    = "increment", -- <increment|range|timestamp|overwrite|chapter>
     force_extension = "no",        -- <no|.ext> extension will be .ext if set
@@ -300,9 +301,22 @@ local function validate_opts()
     end
 end
 
+local function append_slash(path)
+    if not path:match("[\\/]", -1) then
+        return path .. "/"
+    else
+        return path
+    end
+end
+
 function update.save_directory()
+    if #opts.save_directory == 0 then
+        file.path = opts.save_directory
+        return
+    end
     -- expand mpv meta paths (e.g. ~~/directory)
-    file.path = mp.command_native({"expand-path", opts.save_directory})
+    opts.save_directory = append_slash(opts.save_directory)
+    file.path = append_slash(mp.command_native{"expand-path", opts.save_directory})
 end
 
 function update.force_title()
@@ -506,14 +520,14 @@ local function title_override(title, force)
 end
 
 local function path_override(value)
-    value = value or opts.save_directory
+    value = value or "./"
     file.oldpath = file.oldpath or opts.save_directory
     if value == "revert" then
         opts.save_directory = file.oldpath
     else
         opts.save_directory = value
     end
-    file.path = mp.command_native({"expand-path", opts.save_directory})
+    update.save_directory()
     print("Output directory changed to " .. file.path)
     mp.osd_message("streamsave: directory changed to " .. opts.save_directory)
 end
@@ -679,7 +693,7 @@ end
 
 local function set_name(label, title)
     title = title or file.title
-    return file.path .. "/" .. title .. label .. file.ext
+    return file.path .. title .. label .. file.ext
 end
 
 local function increment_filename()

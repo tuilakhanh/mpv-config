@@ -16,7 +16,11 @@ disabled=no
 images=no
 videos=yes
 audio=yes
+additional_image_exts=list,of,ext
+additional_video_exts=list,of,ext
+additional_audio_exts=list,of,ext
 ignore_hidden=yes
+same_type=yes
 
 --]]
 
@@ -31,9 +35,20 @@ o = {
     images = true,
     videos = true,
     audio = true,
-    ignore_hidden = true
+    additional_image_exts = "",
+    additional_video_exts = "",
+    additional_audio_exts = "",
+    ignore_hidden = true,
+    same_type = false
 }
-options.read_options(o)
+options.read_options(o, nil, function(list)
+    split_option_exts(list.additional_video_exts, list.additional_audio_exts, list.additional_image_exts)
+    if list.videos or list.additional_video_exts or
+        list.audio or list.additional_audio_exts or
+        list.images or list.additional_image_exts then
+        create_extensions()
+    end
+end)
 
 function Set (t)
     local set = {}
@@ -42,10 +57,14 @@ function Set (t)
 end
 
 function SetUnion (a,b)
-    local res = {}
-    for k in pairs(a) do res[k] = true end
-    for k in pairs(b) do res[k] = true end
-    return res
+    for k in pairs(b) do a[k] = true end
+    return a
+end
+
+function Split (s)
+    local set = {}
+    for v in string.gmatch(s, '([^,]+)') do set[v] = true end
+    return set
 end
 
 EXTENSIONS_VIDEO = Set {
@@ -63,17 +82,26 @@ EXTENSIONS_IMAGES = Set {
     'svg', 'tga', 'tif', 'tiff', 'webp'
 }
 
-EXTENSIONS = Set {}
-if o.videos then EXTENSIONS = SetUnion(EXTENSIONS, EXTENSIONS_VIDEO) end
-if o.audio then EXTENSIONS = SetUnion(EXTENSIONS, EXTENSIONS_AUDIO) end
-if o.images then EXTENSIONS = SetUnion(EXTENSIONS, EXTENSIONS_IMAGES) end
+function split_option_exts(video, audio, image)
+    if video then o.additional_video_exts = Split(o.additional_video_exts) end
+    if audio then o.additional_audio_exts = Split(o.additional_audio_exts) end
+    if image then o.additional_image_exts = Split(o.additional_image_exts) end
+end
+split_option_exts(true, true, true)
 
-function add_files_at(index, files)
-    index = index - 1
+function create_extensions()
+    EXTENSIONS = {}
+    if o.videos then SetUnion(SetUnion(EXTENSIONS, EXTENSIONS_VIDEO), o.additional_video_exts) end
+    if o.audio then SetUnion(SetUnion(EXTENSIONS, EXTENSIONS_AUDIO), o.additional_audio_exts) end
+    if o.images then SetUnion(SetUnion(EXTENSIONS, EXTENSIONS_IMAGES), o.additional_image_exts) end
+end
+create_extensions()
+
+function add_files(files)
     local oldcount = mp.get_property_number("playlist-count", 1)
     for i = 1, #files do
-        mp.commandv("loadfile", files[i], "append")
-        mp.commandv("playlist-move", oldcount + i - 1, index + i - 1)
+        mp.commandv("loadfile", files[i][1], "append")
+        mp.commandv("playlist-move", oldcount + i - 1, files[i][2])
     end
 end
 
@@ -116,11 +144,10 @@ end
 
 local autoloaded = nil
 
-function get_playlist_filenames()
+function get_playlist_filenames(playlist)
     local filenames = {}
-    for n = 0, pl_count - 1, 1 do
-        local filename = mp.get_property('playlist/'..n..'/filename')
-        local _, file = utils.split_path(filename)
+    for i = 1, #playlist do
+        local _, file = utils.split_path(playlist[i].filename)
         filenames[file] = true
     end
     return filenames
@@ -139,13 +166,26 @@ function find_and_add_entries()
     end
 
     pl_count = mp.get_property_number("playlist-count", 1)
+    this_ext = get_extension(filename)
     -- check if this is a manually made playlist
     if (pl_count > 1 and autoloaded == nil) or
-       (pl_count == 1 and EXTENSIONS[string.lower(get_extension(filename))] == nil) then
+       (pl_count == 1 and EXTENSIONS[string.lower(this_ext)] == nil) then
         msg.verbose("stopping: manually made playlist")
         return
     else
         autoloaded = true
+    end
+
+    if o.same_type then
+        if EXTENSIONS_VIDEO[string.lower(this_ext)] ~= nil then
+            EXTENSIONS_TARGET = EXTENSIONS_VIDEO
+        elseif EXTENSIONS_AUDIO[string.lower(this_ext)] ~= nil then
+            EXTENSIONS_TARGET = EXTENSIONS_AUDIO
+        else
+            EXTENSIONS_TARGET = EXTENSIONS_IMAGES
+        end
+    else
+        EXTENSIONS_TARGET = EXTENSIONS
     end
 
     local pl = mp.get_property_native("playlist", {})
@@ -168,7 +208,7 @@ function find_and_add_entries()
         if ext == nil then
             return false
         end
-        return EXTENSIONS[string.lower(ext)]
+        return EXTENSIONS_TARGET[string.lower(ext)]
     end)
     alphanumsort(files)
 
@@ -190,32 +230,43 @@ function find_and_add_entries()
     msg.trace("current file position in files: "..current)
 
     local append = {[-1] = {}, [1] = {}}
-    local filenames = get_playlist_filenames()
+    local filenames = get_playlist_filenames(pl)
     for direction = -1, 1, 2 do -- 2 iterations, with direction = -1 and +1
         for i = 1, MAXENTRIES do
-            local file = files[current + i * direction]
+            local pos = current + i * direction
+            local file = files[pos]
             if file == nil or file[1] == "." then
                 break
             end
 
             local filepath = dir .. file
             -- skip files already in playlist
-            if filenames[file] then break end
-
-            if direction == -1 then
-                if pl_current == 1 then -- never add additional entries in the middle
+            if not filenames[file] then
+                if direction == -1 then
                     msg.info("Prepending " .. file)
-                    table.insert(append[-1], 1, filepath)
+                    table.insert(append[-1], 1, {filepath, pos - 1})
+                else
+                    msg.info("Adding " .. file)
+                    if pl_count > 1 then
+                        table.insert(append[1], {filepath, pos - 1})
+                    else
+                        mp.commandv("loadfile", filepath, "append")
+                    end
                 end
-            else
-                msg.info("Adding " .. file)
-                table.insert(append[1], filepath)
             end
+        end
+        if pl_count == 1 and direction == -1 and #append[-1] > 0 then
+            for i = 1, #append[-1] do
+                mp.commandv("loadfile", append[-1][i][1], "append")
+            end
+            mp.commandv("playlist-move", 0, current)
         end
     end
 
-    add_files_at(pl_current + 1, append[1])
-    add_files_at(pl_current, append[-1])
+    if pl_count > 1 then
+        add_files(append[1])
+        add_files(append[-1])
+    end
 end
 
 mp.register_event("start-file", find_and_add_entries)
