@@ -370,6 +370,20 @@
 #define WD1TK gaussian
 #endif
 
+/* Kernel parameters
+ *
+ * The following kernels take parameters:
+ *
+ * ffexp: K0
+ */
+#ifdef LUMA_raw
+#define K0 1.0
+#define K1 1.0
+#else
+#define K0 1.0
+#define K1 1.0
+#endif
+
 /* Negative kernel parameter offsets
  *
  * Usually kernels go high -> low. These parameters allow for a kernel to go 
@@ -507,8 +521,7 @@
 #define MED_DIV(x,y) ((x)/(y))
 #endif
 
-// XXX make this capable of being set per-kernel, e.g., RK0, SK0...
-#define K0 1.0
+// XXX make kernel params capable of being set per-kernel, e.g., RK0, SK0...
 
 // kernels
 // XXX sinc & sphinx: 1e-3 was selected tentatively;  not sure what the correct value should be (1e-8 is too low)
@@ -1664,6 +1677,20 @@ vec4 hook()
 #define WD1TK gaussian
 #endif
 
+/* Kernel parameters
+ *
+ * The following kernels take parameters:
+ *
+ * ffexp: K0
+ */
+#ifdef LUMA_raw
+#define K0 1.0
+#define K1 1.0
+#else
+#define K0 1.0
+#define K1 1.0
+#endif
+
 /* Negative kernel parameter offsets
  *
  * Usually kernels go high -> low. These parameters allow for a kernel to go 
@@ -1801,8 +1828,7 @@ vec4 hook()
 #define MED_DIV(x,y) ((x)/(y))
 #endif
 
-// XXX make this capable of being set per-kernel, e.g., RK0, SK0...
-#define K0 1.0
+// XXX make kernel params capable of being set per-kernel, e.g., RK0, SK0...
 
 // kernels
 // XXX sinc & sphinx: 1e-3 was selected tentatively; not sure what the correct value should be (1e-8 is too low)
