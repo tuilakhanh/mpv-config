@@ -1,4 +1,5 @@
-# mpv Configuration
+# mpv configuration
+**This mpv configuration is done on mpv-git. Make sure you are using the latest version of mpv-git if you want to use this configuration.**
 ![thumb](https://github.com/tuilakhanh/mpv-conf/assets/17153084/908b4514-d85f-4c99-b9c1-28245795ea94)
 
 ## Scripts and Shaders Credits
