@@ -20,24 +20,58 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+//!HOOK CHROMA
+//!BIND LUMA
+//!BIND HOOKED
+//!SAVE LUMA_LOWRES
+//!WHEN CHROMA.w LUMA.w <
+//!DESC Joint Bilateral (Downscaling Luma)
+
+vec4 hook() {
+    vec2 start  = ceil((LUMA_pos - CHROMA_pt) * LUMA_size - 0.5);
+    vec2 end = floor((LUMA_pos + CHROMA_pt) * LUMA_size - 0.5);
+
+    float luma_pix = 0.0;
+    float w = 0.0;
+    float d = 0.0;
+    float wt = 0.0;
+    float val = 0.0;
+    vec2 pos = LUMA_pos;
+
+    for (float dx = start.x; dx <= end.x; dx++) {
+        for (float dy = start.y; dy <= end.y; dy++) {
+            pos = LUMA_pt * vec2(dx + 0.5, dy + 0.5);
+            d = length((pos - LUMA_pos) * CHROMA_size);
+            w = exp(-2.0 * pow(d, 2.0));
+            luma_pix = LUMA_tex(pos).x;
+            val += w * luma_pix;
+            wt += w;
+        }
+    }
+
+    vec4 output_pix = vec4(val / wt, 0.0, 0.0, 1.0);
+    return output_pix;
+}
+
 //!PARAM distance_coeff
 //!TYPE float
 //!MINIMUM 0.0
-3.0
+4.0
 
 //!PARAM intensity_coeff
 //!TYPE float
 //!MINIMUM 0.0
-128.0
+256.0
 
 //!HOOK CHROMA
 //!BIND CHROMA
 //!BIND LUMA
+//!BIND LUMA_LOWRES
 //!WIDTH LUMA.w
 //!HEIGHT LUMA.h
 //!WHEN CHROMA.w LUMA.w <
 //!OFFSET ALIGN
-//!DESC Joint Bilateral
+//!DESC Joint Bilateral (Upscaling Chroma)
 
 float comp_wd(vec2 distance) {
     return exp(-distance_coeff * (distance.x * distance.x + distance.y * distance.y));
@@ -72,18 +106,18 @@ vec4 hook() {
     vec2 chroma_o = CHROMA_tex(vec2((fp + vec2(1.5, 2.5) ) * CHROMA_pt)).xy;
 
     float luma_0 = LUMA_texOff(0.0).x;
-    float luma_b = LUMA_tex(vec2((fp + vec2(0.5, -0.5)) * CHROMA_pt)).x;
-    float luma_c = LUMA_tex(vec2((fp + vec2(1.5, -0.5)) * CHROMA_pt)).x;
-    float luma_e = LUMA_tex(vec2((fp + vec2(-0.5, 0.5)) * CHROMA_pt)).x;
-    float luma_f = LUMA_tex(vec2((fp + vec2( 0.5, 0.5)) * CHROMA_pt)).x;
-    float luma_g = LUMA_tex(vec2((fp + vec2( 1.5, 0.5)) * CHROMA_pt)).x;
-    float luma_h = LUMA_tex(vec2((fp + vec2( 2.5, 0.5)) * CHROMA_pt)).x;
-    float luma_i = LUMA_tex(vec2((fp + vec2(-0.5, 1.5)) * CHROMA_pt)).x;
-    float luma_j = LUMA_tex(vec2((fp + vec2( 0.5, 1.5)) * CHROMA_pt)).x;
-    float luma_k = LUMA_tex(vec2((fp + vec2( 1.5, 1.5)) * CHROMA_pt)).x;
-    float luma_l = LUMA_tex(vec2((fp + vec2( 2.5, 1.5)) * CHROMA_pt)).x;
-    float luma_n = LUMA_tex(vec2((fp + vec2(0.5, 2.5) ) * CHROMA_pt)).x;
-    float luma_o = LUMA_tex(vec2((fp + vec2(1.5, 2.5) ) * CHROMA_pt)).x;
+    float luma_b = LUMA_LOWRES_tex(vec2((fp + vec2(0.5, -0.5)) * CHROMA_pt)).x;
+    float luma_c = LUMA_LOWRES_tex(vec2((fp + vec2(1.5, -0.5)) * CHROMA_pt)).x;
+    float luma_e = LUMA_LOWRES_tex(vec2((fp + vec2(-0.5, 0.5)) * CHROMA_pt)).x;
+    float luma_f = LUMA_LOWRES_tex(vec2((fp + vec2( 0.5, 0.5)) * CHROMA_pt)).x;
+    float luma_g = LUMA_LOWRES_tex(vec2((fp + vec2( 1.5, 0.5)) * CHROMA_pt)).x;
+    float luma_h = LUMA_LOWRES_tex(vec2((fp + vec2( 2.5, 0.5)) * CHROMA_pt)).x;
+    float luma_i = LUMA_LOWRES_tex(vec2((fp + vec2(-0.5, 1.5)) * CHROMA_pt)).x;
+    float luma_j = LUMA_LOWRES_tex(vec2((fp + vec2( 0.5, 1.5)) * CHROMA_pt)).x;
+    float luma_k = LUMA_LOWRES_tex(vec2((fp + vec2( 1.5, 1.5)) * CHROMA_pt)).x;
+    float luma_l = LUMA_LOWRES_tex(vec2((fp + vec2( 2.5, 1.5)) * CHROMA_pt)).x;
+    float luma_n = LUMA_LOWRES_tex(vec2((fp + vec2(0.5, 2.5) ) * CHROMA_pt)).x;
+    float luma_o = LUMA_LOWRES_tex(vec2((fp + vec2(1.5, 2.5) ) * CHROMA_pt)).x;
 
     float wd_b = comp_wd(vec2( 0.0,-1.0) - pp);
     float wd_c = comp_wd(vec2( 1.0,-1.0) - pp);

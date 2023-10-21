@@ -23,7 +23,7 @@
 //!PARAM intensity_coeff
 //!TYPE float
 //!MINIMUM 0.0
-128.0
+256.0
 
 //!HOOK CHROMA
 //!BIND CHROMA
@@ -32,7 +32,7 @@
 //!HEIGHT LUMA.h
 //!WHEN CHROMA.w LUMA.w <
 //!OFFSET ALIGN
-//!DESC Fast Bilateral
+//!DESC Fast Bilateral (Upscaling Chroma)
 
 float comp_wi(float distance) {
     return exp(-intensity_coeff * distance * distance);
