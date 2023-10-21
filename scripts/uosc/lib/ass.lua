@@ -3,20 +3,30 @@
 local ass_mt = getmetatable(assdraw.ass_new())
 
 -- Opacity.
----@param opacity number|number[] Opacity of all elements, or an array of [primary, secondary, border, shadow] opacities.
+---@param self table|nil
+---@param opacity number|{primary?: number; border?: number, shadow?: number, main?: number} Opacity of all elements.
 ---@param fraction? number Optionally adjust the above opacity by this fraction.
-function ass_mt:opacity(opacity, fraction)
+---@return string|nil
+function ass_mt.opacity(self, opacity, fraction)
 	fraction = fraction ~= nil and fraction or 1
-	if type(opacity) == 'number' then
-		self.text = self.text .. string.format('{\\alpha&H%X&}', opacity_to_alpha(opacity * fraction))
-	else
-		self.text = self.text .. string.format(
-			'{\\1a&H%X&\\2a&H%X&\\3a&H%X&\\4a&H%X&}',
-			opacity_to_alpha((opacity[1] or 0) * fraction),
-			opacity_to_alpha((opacity[2] or 0) * fraction),
-			opacity_to_alpha((opacity[3] or 0) * fraction),
-			opacity_to_alpha((opacity[4] or 0) * fraction)
-		)
+	opacity = type(opacity) == 'table' and opacity or {main = opacity}
+	local text = ''
+	if opacity.main then
+		text = text .. string.format('\\alpha&H%X&', opacity_to_alpha(opacity.main * fraction))
+	end
+	if opacity.primary then
+		text = text .. string.format('\\1a&H%X&', opacity_to_alpha(opacity.primary * fraction))
+	end
+	if opacity.border then
+		text = text .. string.format('\\3a&H%X&', opacity_to_alpha(opacity.border * fraction))
+	end
+	if opacity.shadow then
+		text = text .. string.format('\\4a&H%X&', opacity_to_alpha(opacity.shadow * fraction))
+	end
+	if self == nil then
+		return text
+	elseif text ~= '' then
+		self.text = self.text .. '{' .. text .. '}'
 	end
 end
 
@@ -38,7 +48,7 @@ end
 ---@param y number
 ---@param align number
 ---@param value string|number
----@param opts {size: number; font?: string; color?: string; bold?: boolean; italic?: boolean; border?: number; border_color?: string; shadow?: number; shadow_color?: string; rotate?: number; wrap?: number; opacity?: number; clip?: string}
+---@param opts {size: number; font?: string; color?: string; bold?: boolean; italic?: boolean; border?: number; border_color?: string; shadow?: number; shadow_color?: string; rotate?: number; wrap?: number; opacity?: number|{primary?: number; border?: number, shadow?: number, main?: number}; clip?: string}
 function ass_mt:txt(x, y, align, value, opts)
 	local border_size = opts.border or 0
 	local shadow_size = opts.shadow or 0
@@ -64,7 +74,7 @@ function ass_mt:txt(x, y, align, value, opts)
 	if border_size > 0 then tags = tags .. '\\3c&H' .. (opts.border_color or bg) end
 	if shadow_size > 0 then tags = tags .. '\\4c&H' .. (opts.shadow_color or bg) end
 	-- opacity
-	if opts.opacity then tags = tags .. string.format('\\alpha&H%X&', opacity_to_alpha(opts.opacity)) end
+	if opts.opacity then tags = tags .. self.opacity(nil, opts.opacity) end
 	-- clip
 	if opts.clip then tags = tags .. opts.clip end
 	-- render
@@ -73,20 +83,32 @@ function ass_mt:txt(x, y, align, value, opts)
 end
 
 -- Tooltip.
----@param element {ax: number; ay: number; bx: number; by: number}
+---@param element Rect
 ---@param value string|number
----@param opts? {size?: number; offset?: number; bold?: boolean; italic?: boolean; width_overwrite?: number, responsive?: boolean}
+---@param opts? {size?: number; offset?: number; bold?: boolean; italic?: boolean; width_overwrite?: number, margin?: number; responsive?: boolean; lines?: integer}
 function ass_mt:tooltip(element, value, opts)
+	if value == '' then return end
 	opts = opts or {}
-	opts.size = opts.size or 16
-	opts.border = options.text_border
+	opts.size = opts.size or round(16 * state.scale)
+	opts.border = options.text_border * state.scale
 	opts.border_color = bg
-	local offset = opts.offset or opts.size / 2
+	opts.margin = opts.margin or round(10 * state.scale)
+	opts.lines = opts.lines or 1
+	local padding_y = round(opts.size / 6)
+	local padding_x = round(opts.size / 3)
+	local offset = opts.offset or 2
 	local align_top = opts.responsive == false or element.ay - offset > opts.size * 2
 	local x = element.ax + (element.bx - element.ax) / 2
 	local y = align_top and element.ay - offset or element.by + offset
-	local margin = (opts.width_overwrite or text_width(value, opts)) / 2 + 10
-	self:txt(clamp(margin, x, display.width - margin), y, align_top and 2 or 8, value, opts)
+	local width_half = (opts.width_overwrite or text_width(value, opts)) / 2 + padding_x
+	local min_edge_distance = width_half + opts.margin + Elements:v('window_border', 'size', 0)
+	x = clamp(min_edge_distance, x, display.width - min_edge_distance)
+	local ax, bx = round(x - width_half), round(x + width_half)
+	local ay = (align_top and y - opts.size * opts.lines - 2 * padding_y or y)
+	local by = (align_top and y or y + opts.size * opts.lines + 2 * padding_y)
+	self:rect(ax, ay, bx, by, {color = bg, opacity = config.opacity.tooltip, radius = state.radius})
+	self:txt(x, align_top and y - padding_y or y + padding_y, align_top and 2 or 8, value, opts)
+	return {ax = element.ax, ay = ay, bx = element.bx, by = by}
 end
 
 -- Rectangle.
@@ -94,7 +116,7 @@ end
 ---@param ay number
 ---@param bx number
 ---@param by number
----@param opts? {color?: string; border?: number; border_color?: string; opacity?: number; border_opacity?: number; clip?: string, radius?: number}
+---@param opts? {color?: string; border?: number; border_color?: string; opacity?: number|{primary?: number; border?: number, shadow?: number, main?: number}; clip?: string, radius?: number}
 function ass_mt:rect(ax, ay, bx, by, opts)
 	opts = opts or {}
 	local border_size = opts.border or 0
@@ -105,8 +127,7 @@ function ass_mt:rect(ax, ay, bx, by, opts)
 	tags = tags .. '\\1c&H' .. (opts.color or fg)
 	if border_size > 0 then tags = tags .. '\\3c&H' .. (opts.border_color or bg) end
 	-- opacity
-	if opts.opacity then tags = tags .. string.format('\\alpha&H%X&', opacity_to_alpha(opts.opacity)) end
-	if opts.border_opacity then tags = tags .. string.format('\\3a&H%X&', opacity_to_alpha(opts.border_opacity)) end
+	if opts.opacity then tags = tags .. self.opacity(nil, opts.opacity) end
 	-- clip
 	if opts.clip then
 		tags = tags .. opts.clip
@@ -115,7 +136,7 @@ function ass_mt:rect(ax, ay, bx, by, opts)
 	self:new_event()
 	self.text = self.text .. '{' .. tags .. '}'
 	self:draw_start()
-	if opts.radius then
+	if opts.radius and opts.radius > 0 then
 		self:round_rect_cw(ax, ay, bx, by, opts.radius)
 	else
 		self:rect_cw(ax, ay, bx, by)

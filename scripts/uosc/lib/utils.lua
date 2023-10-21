@@ -1,103 +1,158 @@
 --[[ UI specific utilities that might or might not depend on its state or options ]]
 
--- Sorting comparator close to (but not exactly) how file explorers sort files.
-sort_filenames = (function()
-	local symbol_order
-	local default_order
+---@alias Point {x: number; y: number}
+---@alias Rect {ax: number, ay: number, bx: number, by: number}
 
-	if state.platform == 'windows' then
-		symbol_order = {
-			['!'] = 1, ['#'] = 2, ['$'] = 3, ['%'] = 4, ['&'] = 5, ['('] = 6, [')'] = 6, [','] = 7,
-			['.'] = 8, ["'"] = 9, ['-'] = 10, [';'] = 11, ['@'] = 12, ['['] = 13, [']'] = 13, ['^'] = 14,
-			['_'] = 15, ['`'] = 16, ['{'] = 17, ['}'] = 17, ['~'] = 18, ['+'] = 19, ['='] = 20,
-		}
-		default_order = 21
-	else
-		symbol_order = {
-			['`'] = 1, ['^'] = 2, ['~'] = 3, ['='] = 4, ['_'] = 5, ['-'] = 6, [','] = 7, [';'] = 8,
-			['!'] = 9, ["'"] = 10, ['('] = 11, [')'] = 11, ['['] = 12, [']'] = 12, ['{'] = 13, ['}'] = 14,
-			['@'] = 15, ['$'] = 16, ['*'] = 17, ['&'] = 18, ['%'] = 19, ['+'] = 20, ['.'] = 22, ['#'] = 23,
-		}
-		default_order = 21
-	end
-
-	-- Alphanumeric sorting for humans in Lua
+--- In place sorting of filenames
+---@param filenames string[]
+function sort_filenames(filenames)
+	-- alphanum sorting for humans in Lua
 	-- http://notebook.kulchenko.com/algorithms/alphanumeric-natural-sorting-for-humans-in-lua
-	local function pad_number(n, d)
-		return #d > 0 and ("%03d%s%.12f"):format(#n, n, tonumber(d) / (10 ^ #d))
-			or ("%03d%s"):format(#n, n)
+	local function padnum(n, d)
+		return #d > 0 and ('%03d%s%.12f'):format(#n, n, tonumber(d) / (10 ^ #d))
+			or ('%03d%s'):format(#n, n)
 	end
 
-	--- In place sorting of filenames
-	---@param filenames string[]
-	return function(filenames)
-		local tuples = {}
-		for i, filename in ipairs(filenames) do
-			local first_char = filename:sub(1, 1)
-			local order = symbol_order[first_char] or default_order
-			local formatted = filename:lower():gsub('0*(%d+)%.?(%d*)', pad_number)
-			tuples[i] = {order, formatted, filename}
-		end
-		table.sort(tuples, function(a, b)
-			if a[1] ~= b[1] then return a[1] < b[1] end
-			return a[2] == b[2] and #b[3] < #a[3] or a[2] < b[2]
-		end)
-		for i, tuple in ipairs(tuples) do filenames[i] = tuple[3] end
+	local tuples = {}
+	for i, f in ipairs(filenames) do
+		tuples[i] = {f:lower():gsub('0*(%d+)%.?(%d*)', padnum), f}
 	end
-end)()
+	table.sort(tuples, function(a, b)
+		return a[1] == b[1] and #b[2] < #a[2] or a[1] < b[1]
+	end)
+	for i, tuple in ipairs(tuples) do filenames[i] = tuple[2] end
+	return filenames
+end
 
 -- Creates in-between frames to animate value from `from` to `to` numbers.
 ---@param from number
 ---@param to number|fun():number
 ---@param setter fun(value: number)
----@param factor_or_callback? number|fun()
+---@param duration_or_callback? number|fun() Duration in milliseconds or a callback function.
 ---@param callback? fun() Called either on animation end, or when animation is killed.
-function tween(from, to, setter, factor_or_callback, callback)
-	local factor = factor_or_callback
-	if type(factor_or_callback) == 'function' then callback = factor_or_callback end
-	if type(factor) ~= 'number' then factor = 0.3 end
+function tween(from, to, setter, duration_or_callback, callback)
+	local duration = duration_or_callback
+	if type(duration_or_callback) == 'function' then callback = duration_or_callback end
+	if type(duration) ~= 'number' then duration = options.animation_duration end
 
 	local current, done, timeout = from, false, nil
 	local get_to = type(to) == 'function' and to or function() return to --[[@as number]] end
-	local cutoff = math.abs(get_to() - from) * 0.01
+	local distance = math.abs(get_to() - current)
+	local cutoff = distance * 0.01
+	local target_ticks = (math.max(duration, 1) / (state.render_delay * 1000))
+	local decay = 1 - ((cutoff / distance) ^ (1 / target_ticks))
 
 	local function finish()
 		if not done then
+			setter(get_to())
 			done = true
 			timeout:kill()
 			if callback then callback() end
+			request_render()
 		end
 	end
 
 	local function tick()
 		local to = get_to()
-		current = current + ((to - current) * factor)
+		current = current + ((to - current) * decay)
 		local is_end = math.abs(to - current) <= cutoff
-		setter(is_end and to or current)
-		request_render()
-		if is_end then finish()
-		else timeout:resume() end
+		if is_end then
+			finish()
+		else
+			setter(current)
+			timeout:resume()
+			request_render()
+		end
 	end
 
 	timeout = mp.add_timeout(state.render_delay, tick)
-	tick()
+	if cutoff > 0 then tick() else finish() end
 
 	return finish
 end
 
----@param point {x: number; y: number}
----@param rect {ax: number; ay: number; bx: number; by: number}
+---@param point Point
+---@param rect Rect
 function get_point_to_rectangle_proximity(point, rect)
 	local dx = math.max(rect.ax - point.x, 0, point.x - rect.bx)
 	local dy = math.max(rect.ay - point.y, 0, point.y - rect.by)
 	return math.sqrt(dx * dx + dy * dy)
 end
 
----@param point_a {x: number; y: number}
----@param point_b {x: number; y: number}
+---@param point_a Point
+---@param point_b Point
 function get_point_to_point_proximity(point_a, point_b)
 	local dx, dy = point_a.x - point_b.x, point_a.y - point_b.y
 	return math.sqrt(dx * dx + dy * dy)
+end
+
+---@param lax number
+---@param lay number
+---@param lbx number
+---@param lby number
+---@param max number
+---@param may number
+---@param mbx number
+---@param mby number
+function get_line_to_line_intersection(lax, lay, lbx, lby, max, may, mbx, mby)
+	-- Calculate the direction of the lines
+	local uA = ((mbx - max) * (lay - may) - (mby - may) * (lax - max)) /
+		((mby - may) * (lbx - lax) - (mbx - max) * (lby - lay))
+	local uB = ((lbx - lax) * (lay - may) - (lby - lay) * (lax - max)) /
+		((mby - may) * (lbx - lax) - (mbx - max) * (lby - lay))
+
+	-- If uA and uB are between 0-1, lines are colliding
+	if uA >= 0 and uA <= 1 and uB >= 0 and uB <= 1 then
+		return lax + (uA * (lbx - lax)), lay + (uA * (lby - lay))
+	end
+
+	return nil, nil
+end
+
+-- Returns distance from the start of a finite ray assumed to be at (rax, ray)
+-- coordinates to a line.
+---@param rax number
+---@param ray number
+---@param rbx number
+---@param rby number
+---@param lax number
+---@param lay number
+---@param lbx number
+---@param lby number
+function get_ray_to_line_distance(rax, ray, rbx, rby, lax, lay, lbx, lby)
+	local x, y = get_line_to_line_intersection(rax, ray, rbx, rby, lax, lay, lbx, lby)
+	if x then
+		return math.sqrt((rax - x) ^ 2 + (ray - y) ^ 2)
+	end
+	return nil
+end
+
+-- Returns distance from the start of a finite ray assumed to be at (ax, ay)
+-- coordinates to a rectangle. Returns `0` if ray originates inside rectangle.
+---@param  ax number
+---@param  ay number
+---@param  bx number
+---@param  by number
+---@param  rect Rect
+---@return number|nil
+function get_ray_to_rectangle_distance(ax, ay, bx, by, rect)
+	-- Is inside
+	if ax >= rect.ax and ax <= rect.bx and ay >= rect.ay and ay <= rect.by then
+		return 0
+	end
+
+	local closest = nil
+
+	local function updateDistance(distance)
+		if distance and (not closest or distance < closest) then closest = distance end
+	end
+
+	updateDistance(get_ray_to_line_distance(ax, ay, bx, by, rect.ax, rect.ay, rect.bx, rect.ay))
+	updateDistance(get_ray_to_line_distance(ax, ay, bx, by, rect.bx, rect.ay, rect.bx, rect.by))
+	updateDistance(get_ray_to_line_distance(ax, ay, bx, by, rect.ax, rect.by, rect.bx, rect.by))
+	updateDistance(get_ray_to_line_distance(ax, ay, bx, by, rect.ax, rect.ay, rect.ax, rect.by))
+
+	return closest
 end
 
 -- Call function with args if it exists
@@ -185,16 +240,20 @@ function join_path(p1, p2)
 	local p1, separator = trim_trailing_separator(p1)
 	-- Prevents joining drive letters with a redundant separator (`C:\\foo`),
 	-- as `trim_trailing_separator()` doesn't trim separators from drive letters.
-	return p1:sub(#p1) == separator and p1 .. p2 or p1 .. separator.. p2
+	return p1:sub(#p1) == separator and p1 .. p2 or p1 .. separator .. p2
 end
 
 -- Check if path is absolute.
 ---@param path string
 ---@return boolean
 function is_absolute(path)
-	if path:sub(1, 2) == '\\\\' then return true
-	elseif state.platform == 'windows' then return path:find('^%a+:') ~= nil
-	else return path:sub(1, 1) == '/' end
+	if path:sub(1, 2) == '\\\\' then
+		return true
+	elseif state.platform == 'windows' then
+		return path:find('^%a+:') ~= nil
+	else
+		return path:sub(1, 1) == '/'
+	end
 end
 
 -- Ensure path is absolute.
@@ -242,9 +301,13 @@ function normalize_path(path)
 	path = trim_trailing_separator(path)
 
 	--Deduplication of path separators
-	if is_unc then path = path:gsub('(.\\)\\+', '%1')
-	elseif state.platform == 'windows' then path = path:gsub('\\\\+', '\\')
-	else path = path:gsub('//+', '/') end
+	if is_unc then
+		path = path:gsub('(.\\)\\+', '%1')
+	elseif state.platform == 'windows' then
+		path = path:gsub('\\\\+', '\\')
+	else
+		path = path:gsub('//+', '/')
+	end
 
 	return path
 end
@@ -252,7 +315,7 @@ end
 -- Check if path is a protocol, such as `http://...`.
 ---@param path string
 function is_protocol(path)
-	return type(path) == 'string' and (path:find('^%a[%a%d-_]+://') ~= nil or path:find('^%a[%a%d-_]+:\\?') ~= nil)
+	return type(path) == 'string' and (path:find('^%a[%w.+-]-://') ~= nil or path:find('^%a[%w.+-]-:%?') ~= nil)
 end
 
 ---@param path string
@@ -295,10 +358,11 @@ end
 
 -- Reads items in directory and splits it into directories and files tables.
 ---@param path string
----@param allowed_types? string[] Filter `files` table to contain only files with these extensions.
+---@param opts? {types?: string[], hidden?: boolean}
 ---@return string[]|nil files
 ---@return string[]|nil directories
-function read_directory(path, allowed_types)
+function read_directory(path, opts)
+	opts = opts or {}
 	local items, error = utils.readdir(path, 'all')
 
 	if not items then
@@ -309,14 +373,16 @@ function read_directory(path, allowed_types)
 	local files, directories = {}, {}
 
 	for _, item in ipairs(items) do
-		if item ~= '.' and item ~= '..' then
+		if item ~= '.' and item ~= '..' and (opts.hidden or item:sub(1, 1) ~= '.') then
 			local info = utils.file_info(join_path(path, item))
 			if info then
 				if info.is_file then
-					if not allowed_types or has_any_extension(item, allowed_types) then
+					if not opts.types or has_any_extension(item, opts.types) then
 						files[#files + 1] = item
 					end
-				else directories[#directories + 1] = item end
+				else
+					directories[#directories + 1] = item
+				end
 			end
 		end
 	end
@@ -328,18 +394,19 @@ end
 -- and index of the current file in the table.
 -- Returned table will always contain `file_path`, regardless of `allowed_types`.
 ---@param file_path string
----@param allowed_types? string[] Filter adjacent file types. Does NOT filter out the `file_path`.
-function get_adjacent_files(file_path, allowed_types)
+---@param opts? {types?: string[], hidden?: boolean}
+function get_adjacent_files(file_path, opts)
+	opts = opts or {}
 	local current_meta = serialize_path(file_path)
 	if not current_meta then return end
-	local files = read_directory(current_meta.dirname)
+	local files = read_directory(current_meta.dirname, {hidden = opts.hidden})
 	if not files then return end
 	sort_filenames(files)
 	local current_file_index
 	local paths = {}
 	for _, file in ipairs(files) do
 		local is_current_file = current_meta.basename == file
-		if is_current_file or not allowed_types or has_any_extension(file, allowed_types) then
+		if is_current_file or not opts.types or has_any_extension(file, opts.types) then
 			paths[#paths + 1] = join_path(current_meta.dirname, file)
 			if is_current_file then current_file_index = #paths end
 		end
@@ -350,37 +417,76 @@ end
 
 -- Navigates in a list, using delta or, when `state.shuffle` is enabled,
 -- randomness to determine the next item. Loops around if `loop-playlist` is enabled.
----@param list table
+---@param paths table
 ---@param current_index number
----@param delta number
-function decide_navigation_in_list(list, current_index, delta)
-	if #list < 2 then return #list, list[#list] end
+---@param delta number 1 or -1 for forward or backward
+function decide_navigation_in_list(paths, current_index, delta)
+	if #paths < 2 then return #paths, paths[#paths] end
+	delta = delta < 0 and -1 or 1
 
+	-- Shuffle looks at the played files history trimmed to 80% length of the paths
+	-- and removes all paths in it from the potential shuffle pool. This guarantees
+	-- no path repetition until at least 80% of the playlist has been exhausted.
 	if state.shuffle then
-		local new_index = current_index
+		state.shuffle_history = state.shuffle_history or {
+			pos = #state.history,
+			paths = itable_slice(state.history),
+		}
+		state.shuffle_history.pos = state.shuffle_history.pos + delta
+		local history_path = state.shuffle_history.paths[state.shuffle_history.pos]
+		local next_index = history_path and itable_index_of(paths, history_path)
+		if next_index then
+			return next_index, history_path
+		end
+		if delta < 0 then
+			state.shuffle_history.pos = state.shuffle_history.pos - delta
+		else
+			state.shuffle_history.pos = math.min(state.shuffle_history.pos, #state.shuffle_history.paths + 1)
+		end
+
+		local trimmed_history = itable_slice(state.history, -math.floor(#paths * 0.8))
+		local shuffle_pool = {}
+
+		for index, value in ipairs(paths) do
+			if not itable_has(trimmed_history, value) then
+				shuffle_pool[#shuffle_pool + 1] = index
+			end
+		end
+
 		math.randomseed(os.time())
-		while current_index == new_index do new_index = math.random(#list) end
-		return new_index, list[new_index]
+		local next_index = shuffle_pool[math.random(#shuffle_pool)]
+		local next_path = paths[next_index]
+		table.insert(state.shuffle_history.paths, state.shuffle_history.pos, next_path)
+		return next_index, next_path
 	end
 
 	local new_index = current_index + delta
 	if mp.get_property_native('loop-playlist') then
-		if new_index > #list then new_index = new_index % #list
-		elseif new_index < 1 then new_index = #list - new_index end
-	elseif new_index < 1 or new_index > #list then
+		if new_index > #paths then
+			new_index = new_index % #paths
+		elseif new_index < 1 then
+			new_index = #paths - new_index
+		end
+	elseif new_index < 1 or new_index > #paths then
 		return
 	end
 
-	return new_index, list[new_index]
+	return new_index, paths[new_index]
 end
 
 ---@param delta number
 function navigate_directory(delta)
 	if not state.path or is_protocol(state.path) then return false end
-	local paths, current_index = get_adjacent_files(state.path, config.types.autoload)
+	local paths, current_index = get_adjacent_files(state.path, {
+		types = config.types.autoload,
+		hidden = options.show_hidden_files,
+	})
 	if paths and current_index then
 		local _, path = decide_navigation_in_list(paths, current_index, delta)
-		if path then mp.commandv('loadfile', path) return true end
+		if path then
+			mp.commandv('loadfile', path)
+			return true
+		end
 	end
 	return false
 end
@@ -389,8 +495,12 @@ end
 function navigate_playlist(delta)
 	local playlist, pos = mp.get_property_native('playlist'), mp.get_property_native('playlist-pos-1')
 	if playlist and #playlist > 1 and pos then
-		local index = decide_navigation_in_list(playlist, pos, delta)
-		if index then mp.commandv('playlist-play-index', index - 1) return true end
+		local paths = itable_map(playlist, function(item) return normalize_path(item.filename) end)
+		local index = decide_navigation_in_list(paths, pos, delta)
+		if index then
+			mp.commandv('playlist-play-index', index - 1)
+			return true
+		end
 	end
 	return false
 end
@@ -413,19 +523,19 @@ function delete_file(path)
 			]]
 
 			local escaped_path = string.gsub(path, "'", "''")
-            escaped_path = string.gsub(escaped_path, "’", "’’")
-            escaped_path = string.gsub(escaped_path, "%%", "%%%%")
-            ps_code = string.gsub(ps_code, "__path__", escaped_path)
-		    args = { 'powershell', '-NoProfile', '-Command', ps_code }
+			escaped_path = string.gsub(escaped_path, '’', '’’')
+			escaped_path = string.gsub(escaped_path, '%%', '%%%%')
+			ps_code = string.gsub(ps_code, '__path__', escaped_path)
+			args = {'powershell', '-NoProfile', '-Command', ps_code}
 		else
-			args = { 'cmd', '/C', 'del', path }
+			args = {'cmd', '/C', 'del', path}
 		end
 	else
 		if options.use_trash then
 			--On Linux and Macos the app trash-cli/trash must be installed first.
-		    args = { 'trash', path }
+			args = {'trash', path}
 		else
-		    args = { 'rm', path }
+			args = {'rm', path}
 		end
 	end
 	return mp.command_native({
@@ -437,26 +547,72 @@ function delete_file(path)
 	})
 end
 
+function delete_file_navigate(delta)
+	local next_file = nil
+	local is_local_file = state.path and not is_protocol(state.path)
+
+	if is_local_file then
+		if Menu:is_open('open-file') then Elements:maybe('menu', 'delete_value', state.path) end
+	end
+
+	if state.has_playlist then
+		mp.commandv('playlist-remove', 'current')
+	else
+		if is_local_file then
+			local paths, current_index = get_adjacent_files(state.path, {
+				types = config.types.autoload,
+				hidden = options.show_hidden_files,
+			})
+			if paths and current_index then
+				local index, path = decide_navigation_in_list(paths, current_index, delta)
+				if path then next_file = path end
+			end
+		end
+
+		if next_file then
+			mp.commandv('loadfile', next_file)
+		else
+			mp.commandv('stop')
+		end
+	end
+
+	if is_local_file then delete_file(state.path) end
+end
+
 function serialize_chapter_ranges(normalized_chapters)
 	local ranges = {}
 	local simple_ranges = {
-		{name = 'openings', patterns = {
+		{
+			name = 'openings',
+			patterns = {
 				'^op ', '^op$', ' op$',
-				'^opening$', ' opening$'
-			}, requires_next_chapter = true},
-		{name = 'intros', patterns = {
+				'^opening$', ' opening$',
+			},
+			requires_next_chapter = true,
+		},
+		{
+			name = 'intros',
+			patterns = {
 				'^intro$', ' intro$',
-				'^avant$', '^prologue$'
-			}, requires_next_chapter = true},
-		{name = 'endings', patterns = {
+				'^avant$', '^prologue$',
+			},
+			requires_next_chapter = true,
+		},
+		{
+			name = 'endings',
+			patterns = {
 				'^ed ', '^ed$', ' ed$',
 				'^ending ', '^ending$', ' ending$',
-			}},
-		{name = 'outros', patterns = {
+			},
+		},
+		{
+			name = 'outros',
+			patterns = {
 				'^outro$', ' outro$',
 				'^closing$', '^closing ',
 				'^preview$', '^pv$',
-			}},
+			},
+		},
 	}
 	local sponsor_ranges = {}
 
@@ -468,7 +624,7 @@ function serialize_chapter_ranges(normalized_chapters)
 
 	-- Clone chapters
 	local chapters = {}
-	for i, normalized in ipairs(normalized_chapters) do chapters[i] = table_shallow_copy(normalized) end
+	for i, normalized in ipairs(normalized_chapters) do chapters[i] = table_assign({}, normalized) end
 
 	for i, chapter in ipairs(chapters) do
 		-- Simple ranges
@@ -480,7 +636,7 @@ function serialize_chapter_ranges(normalized_chapters)
 					if next_chapter or not meta.requires_next_chapter then
 						ranges[#ranges + 1] = table_assign({
 							start = chapter.time,
-							['end'] = next_chapter and next_chapter.time or INFINITY,
+							['end'] = next_chapter and next_chapter.time or math.huge,
 						}, config.chapter_ranges[meta.name])
 					end
 				end
@@ -496,8 +652,10 @@ function serialize_chapter_ranges(normalized_chapters)
 					local end_match = end_chapter.lowercase_title:match('segment end *%(' .. id .. '%)')
 					if end_match then
 						local range = table_assign({
-							start_chapter = chapter, end_chapter = end_chapter,
-							start = chapter.time, ['end'] = end_chapter.time,
+							start_chapter = chapter,
+							end_chapter = end_chapter,
+							start = chapter.time,
+							['end'] = end_chapter.time,
 						}, config.chapter_ranges.ads)
 						ranges[#ranges + 1], sponsor_ranges[#sponsor_ranges + 1] = range, range
 						end_chapter.is_end_only = true
@@ -509,7 +667,7 @@ function serialize_chapter_ranges(normalized_chapters)
 				local next_chapter = chapters[i + 1]
 				ranges[#ranges + 1] = table_assign({
 					start = chapter.time,
-					['end'] = next_chapter and next_chapter.time or INFINITY,
+					['end'] = next_chapter and next_chapter.time or math.huge,
 				}, config.chapter_ranges.ads)
 			end
 		end
@@ -539,7 +697,11 @@ function normalize_chapters(chapters)
 	table.sort(chapters, function(a, b) return a.time < b.time end)
 	-- Ensure titles
 	for index, chapter in ipairs(chapters) do
-		chapter.title = chapter.title or ('Chapter ' .. index)
+		local chapter_number = chapter.title and string.match(chapter.title, '^Chapter (%d+)$')
+		if chapter_number then
+			chapter.title = t('Chapter %s', tonumber(chapter_number))
+		end
+		chapter.title = chapter.title ~= '(unnamed)' and chapter.title ~= '' and chapter.title or t('Chapter %s', index)
 		chapter.lowercase_title = chapter.title:lower()
 	end
 	return chapters
@@ -552,11 +714,30 @@ function serialize_chapters(chapters)
 	local opts = {size = 1, bold = true}
 	for index, chapter in ipairs(chapters) do
 		chapter.index = index
-		chapter.title_wrapped = wrap_text(chapter.title, opts, 25)
+		chapter.title_wrapped, chapter.title_lines = wrap_text(chapter.title, opts, 25)
 		chapter.title_wrapped_width = text_width(chapter.title_wrapped, opts)
 		chapter.title_wrapped = ass_escape(chapter.title_wrapped)
 	end
 	return chapters
+end
+
+---Find all active key bindings or the active key binding for key
+---@param key string|nil
+---@return {[string]: table}|table
+function find_active_keybindings(key)
+	local bindings = mp.get_property_native('input-bindings', {})
+	local active = {} -- map: key-name -> bind-info
+	for _, bind in pairs(bindings) do
+		if bind.owner ~= 'uosc' and bind.priority >= 0 and (not key or bind.key == key) and (
+				not active[bind.key]
+				or (active[bind.key].is_weak and not bind.is_weak)
+				or (bind.is_weak == active[bind.key].is_weak and bind.priority > active[bind.key].priority)
+			)
+		then
+			active[bind.key] = bind
+		end
+	end
+	return not key and active or active[key]
 end
 
 --[[ RENDERING ]]
@@ -565,11 +746,33 @@ function render()
 	if not display.initialized then return end
 	state.render_last_time = mp.get_time()
 
-	cursor.reset_handlers()
+	cursor:clear_zones()
 
 	-- Actual rendering
 	local ass = assdraw.ass_new()
 
+	-- Idle indicator
+	if state.is_idle and not Manager.disabled.idle_indicator then
+		local smaller_side = math.min(display.width, display.height)
+		local center_x, center_y, icon_size = display.width / 2, display.height / 2, math.max(smaller_side / 4, 56)
+		ass:icon(center_x, center_y - icon_size / 4, icon_size, 'not_started', {
+			color = fg, opacity = config.opacity.idle_indicator,
+		})
+		ass:txt(center_x, center_y + icon_size / 2, 8, t('Drop files or URLs to play here'), {
+			size = icon_size / 4, color = fg, opacity = config.opacity.idle_indicator,
+		})
+	end
+
+	-- Audio indicator
+	if state.is_audio and not state.has_image and not Manager.disabled.audio_indicator
+		and not (state.pause and options.pause_indicator == 'static') then
+		local smaller_side = math.min(display.width, display.height)
+		ass:icon(display.width / 2, display.height / 2, smaller_side / 4, 'graphic_eq', {
+			color = fg, opacity = config.opacity.audio_indicator,
+		})
+	end
+
+	-- Elements
 	for _, element in Elements:ipairs() do
 		if element.enabled then
 			local result = element:maybe('render')
@@ -580,7 +783,7 @@ function render()
 		end
 	end
 
-	cursor.decide_keybinds()
+	cursor:decide_keybinds()
 
 	-- submit
 	if osd.res_x == display.width and osd.res_y == display.height and osd.data == ass.text then
