@@ -10,6 +10,7 @@
 - [po5/evafast](https://github.com/po5/evafast)
 - [po5/memo](https://github.com/po5/memo)
 - [natural-harmonia-gropius/quality-menu](https://github.com/natural-harmonia-gropius/mpv-quality-menu)
+- [4e6/mpv-reload](https://github.com/4e6/mpv-reload)
 - [snylonue/slicing_copy](https://github.com/snylonue/mpv_slicing_copy)
 - [Eisa01/smartcopypaste](https://github.com/Eisa01/mpv-scripts#smartcopypaste)
 - [jouni/mpv_sponsorblock_minimal](https://codeberg.org/jouni/mpv_sponsorblock_minimal)
@@ -22,19 +23,18 @@
 
 - [bjin/mpv-prescalers](https://github.com/bjin/mpv-prescalers/tree/master/gather)
     - RAVU
+    - NNEDI
 - [igv/FSRCNNX](https://github.com/igv/FSRCNN-TensorFlow/releases)
 - [HelpSeeker/FSRCNNX-Distort](https://github.com/HelpSeeker/FSRCNN-TensorFlow/releases)
 - [igv/gist](https://gist.github.com/igv)
     - KrigBilateral.glsl
-    - SSimSuperRes.glsl
-    - SSimDownscaler.glsl
-    - adaptive-sharpen.glsl
 - [Artoriuz/glsl-joint-bilateral](https://github.com/Artoriuz/glsl-joint-bilateral)
     - JointBilateral.glsl
     - FastBilateral.glsl
+    - CfL_Prediction.glsl
+    - CfL_Prediction_4taps.glsl
 - [an3223/shaders](https://github.com/AN3223/dotfiles/tree/master/.config/mpv/shaders)
     - nlmeans.glsl
-    - nlmeans_light.glsl
     - hdeband.glsl
 - [haasn/libplacebo.org](https://libplacebo.org/custom-shaders/#full-example)
     - filmgrain.glsl
