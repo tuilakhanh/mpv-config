@@ -9,7 +9,7 @@
 - [occivink/crop](https://github.com/occivink/mpv-scripts#croplua)
 - [po5/evafast](https://github.com/po5/evafast)
 - [po5/memo](https://github.com/po5/memo)
-- [voz.vn/protocol_hook](https://voz.vn/t/tong-hop-nhung-addon-chat-cho-firefox-pc-mobile.682181/page-303#post-27790639)
+- [voz.vn/protocol_hook](https://github.com/FirefoxUniverse/FirefoxTweaksVN/tree/main/mpv)
 - [natural-harmonia-gropius/quality-menu](https://github.com/natural-harmonia-gropius/mpv-quality-menu)
 - [4e6/mpv-reload](https://github.com/4e6/mpv-reload)
 - [snylonue/slicing_copy](https://github.com/snylonue/mpv_slicing_copy)
