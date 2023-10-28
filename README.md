@@ -32,8 +32,8 @@
 - [Artoriuz/glsl-joint-bilateral](https://github.com/Artoriuz/glsl-joint-bilateral)
     - JointBilateral.glsl
     - FastBilateral.glsl
+- [Artoriuz/glsl-chroma-from-luma-prediction](https://github.com/Artoriuz/glsl-chroma-from-luma-prediction)
     - CfL_Prediction.glsl
-    - CfL_Prediction_4taps.glsl
 - [an3223/shaders](https://github.com/AN3223/dotfiles/tree/master/.config/mpv/shaders)
     - nlmeans.glsl
     - hdeband.glsl
