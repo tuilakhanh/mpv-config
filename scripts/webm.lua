@@ -2828,6 +2828,12 @@ do
         return self:draw()
       end
     end,
+    jumpToStartTime = function(self)
+      return mp.set_property("time-pos", self.startTime)
+    end,
+    jumpToEndTime = function(self)
+      return mp.set_property("time-pos", self.endTime)
+    end,
     setupStartAndEndTimes = function(self)
       if mp.get_property_native("duration") then
         self.startTime = 0
@@ -2850,6 +2856,8 @@ do
       ass:append(tostring(bold('c:')) .. " crop\\N")
       ass:append(tostring(bold('1:')) .. " set start time (current is " .. tostring(seconds_to_time_string(self.startTime)) .. ")\\N")
       ass:append(tostring(bold('2:')) .. " set end time (current is " .. tostring(seconds_to_time_string(self.endTime)) .. ")\\N")
+      ass:append(tostring(bold('!:')) .. " jump to start time\\N")
+      ass:append(tostring(bold('@:')) .. " jump to end time\\N")
       ass:append(tostring(bold('o:')) .. " change encode options\\N")
       ass:append(tostring(bold('p:')) .. " preview\\N")
       ass:append(tostring(bold('e:')) .. " encode\\N\\N")
@@ -2944,6 +2952,20 @@ do
         ["2"] = (function()
           local _base_1 = self
           local _fn_0 = _base_1.setEndTime
+          return function(...)
+            return _fn_0(_base_1, ...)
+          end
+        end)(),
+        ["!"] = (function()
+          local _base_1 = self
+          local _fn_0 = _base_1.jumpToStartTime
+          return function(...)
+            return _fn_0(_base_1, ...)
+          end
+        end)(),
+        ["@"] = (function()
+          local _base_1 = self
+          local _fn_0 = _base_1.jumpToEndTime
           return function(...)
             return _fn_0(_base_1, ...)
           end
