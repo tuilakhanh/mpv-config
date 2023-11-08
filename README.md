@@ -29,9 +29,6 @@
 - [HelpSeeker/FSRCNNX-Distort](https://github.com/HelpSeeker/FSRCNN-TensorFlow/releases)
 - [igv/gist](https://gist.github.com/igv)
     - KrigBilateral.glsl
-- [Artoriuz/glsl-joint-bilateral](https://github.com/Artoriuz/glsl-joint-bilateral)
-    - JointBilateral.glsl
-    - FastBilateral.glsl
 - [Artoriuz/glsl-chroma-from-luma-prediction](https://github.com/Artoriuz/glsl-chroma-from-luma-prediction)
     - CfL_Prediction.glsl
 - [an3223/shaders](https://github.com/AN3223/dotfiles/tree/master/.config/mpv/shaders)
