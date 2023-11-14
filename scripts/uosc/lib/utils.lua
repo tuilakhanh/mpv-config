@@ -421,7 +421,7 @@ end
 ---@param current_index number
 ---@param delta number 1 or -1 for forward or backward
 function decide_navigation_in_list(paths, current_index, delta)
-	if #paths < 2 then return #paths, paths[#paths] end
+	if #paths < 2 then return end
 	delta = delta < 0 and -1 or 1
 
 	-- Shuffle looks at the played files history trimmed to 80% length of the paths
@@ -548,35 +548,23 @@ function delete_file(path)
 end
 
 function delete_file_navigate(delta)
-	local next_file = nil
-	local is_local_file = state.path and not is_protocol(state.path)
+	local path, playlist_pos = state.path, state.playlist_pos
+	local is_local_file = path and not is_protocol(path)
+
+	if navigate_item(delta) then
+		if state.has_playlist then
+			mp.commandv('playlist-remove', playlist_pos - 1)
+		end
+	else
+		mp.command('stop')
+	end
 
 	if is_local_file then
-		if Menu:is_open('open-file') then Elements:maybe('menu', 'delete_value', state.path) end
-	end
-
-	if state.has_playlist then
-		mp.commandv('playlist-remove', 'current')
-	else
-		if is_local_file then
-			local paths, current_index = get_adjacent_files(state.path, {
-				types = config.types.autoload,
-				hidden = options.show_hidden_files,
-			})
-			if paths and current_index then
-				local index, path = decide_navigation_in_list(paths, current_index, delta)
-				if path then next_file = path end
-			end
+		if Menu:is_open('open-file') then
+			Elements:maybe('menu', 'delete_value', path)
 		end
-
-		if next_file then
-			mp.commandv('loadfile', next_file)
-		else
-			mp.commandv('stop')
-		end
+		delete_file(path)
 	end
-
-	if is_local_file then delete_file(state.path) end
 end
 
 function serialize_chapter_ranges(normalized_chapters)
@@ -738,6 +726,42 @@ function find_active_keybindings(key)
 		end
 	end
 	return not key and active or active[key]
+end
+
+---@param type 'sub'|'audio'|'video'
+---@param path string
+function load_track(type, path)
+	mp.commandv(type .. '-add', path, 'cached')
+	-- If subtitle track was loaded, assume the user also wants to see it
+	if type == 'sub' then
+		mp.commandv('set', 'sub-visibility', 'yes')
+	end
+end
+
+---@return string|nil
+function get_clipboard()
+	local result = mp.command_native({
+		name = 'subprocess',
+		capture_stderr = true,
+		capture_stdout = true,
+		playback_only = false,
+		args = {config.ziggy_path, 'get-clipboard'},
+	})
+
+	local function print_error(message)
+		msg.error('Getting clipboard data failed. Error: ' .. message)
+	end
+
+	if result.status == 0 then
+		local data = utils.parse_json(result.stdout)
+		if data and data.payload then
+			return data.payload
+		else
+			print_error(data and (data.error and data.message or 'unknown error') or 'couldn\'t parse json')
+		end
+	else
+		print_error('exit code ' .. result.status .. ': ' .. result.stdout .. result.stderr)
+	end
 end
 
 --[[ RENDERING ]]

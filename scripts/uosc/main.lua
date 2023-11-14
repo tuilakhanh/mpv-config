@@ -1,5 +1,5 @@
 --[[ uosc | https://github.com/tomasklaen/uosc ]]
-local uosc_version = '5.0.0'
+local uosc_version = '5.1.1'
 
 mp.commandv('script-message', 'uosc-version', uosc_version)
 
@@ -45,6 +45,7 @@ defaults = {
 
 	menu_item_height = 36,
 	menu_min_width = 260,
+	menu_padding = 4,
 	menu_type_to_search = true,
 
 	top_bar = 'no-border',
@@ -66,7 +67,7 @@ defaults = {
 	scale_fullscreen = 1.3,
 	font_scale = 1,
 	text_border = 1.2,
-	border_radius = 2,
+	border_radius = 4,
 	color = '',
 	opacity = '',
 	animation_duration = 100,
@@ -146,6 +147,7 @@ local config_defaults = {
 		chapters = 0.8,
 		slider = 0.9,
 		slider_gauge = 1,
+		controls = 0,
 		speed = 0.6,
 		menu = 1,
 		submenu = 0.4,
@@ -157,10 +159,13 @@ local config_defaults = {
 		idle_indicator = 0.8,
 		audio_indicator = 0.5,
 		buffering_indicator = 0.3,
+		playlist_position = 0.8,
 	},
 }
 config = {
 	version = uosc_version,
+	open_subtitles_api_key = 'b0rd16N0bp7DETMpO4pYZwIqmQkZbYQr',
+	open_subtitles_agent = 'uosc v' .. uosc_version,
 	-- sets max rendering frequency in case the
 	-- native rendering frequency could not be detected
 	render_delay = 1 / 60,
@@ -387,6 +392,12 @@ require('lib/utils')
 require('lib/text')
 require('lib/ass')
 require('lib/menus')
+
+-- Determine path to ziggy
+do
+	local bin = 'ziggy-' .. (state.platform == 'windows' and 'windows.exe' or state.platform)
+	config.ziggy_path = join_path(mp.get_script_directory(), join_path('bin', bin))
+end
 
 --[[ STATE UPDATERS ]]
 
@@ -827,6 +838,7 @@ bind_command('keybinds', function()
 		open_command_menu({type = 'keybinds', items = get_keybinds_items(), palette = true})
 	end
 end)
+bind_command('download-subtitles', open_subtitle_downloader)
 bind_command('load-subtitles', create_track_loader_menu_opener({
 	name = 'subtitles', prop = 'sub', allowed_types = itable_join(config.types.video, config.types.subtitle),
 }))
@@ -837,7 +849,7 @@ bind_command('load-video', create_track_loader_menu_opener({
 	name = 'video', prop = 'video', allowed_types = config.types.video,
 }))
 bind_command('subtitles', create_select_tracklist_type_menu_opener(
-	t('Subtitles'), 'sub', 'sid', 'script-binding uosc/load-subtitles'
+	t('Subtitles'), 'sub', 'sid', 'script-binding uosc/load-subtitles', 'script-binding uosc/download-subtitles'
 ))
 bind_command('audio', create_select_tracklist_type_menu_opener(
 	t('Audio'), 'audio', 'aid', 'script-binding uosc/load-audio'
@@ -977,8 +989,9 @@ bind_command('audio-device', create_self_updating_menu_opener({
 				local hint = string.match(device.name, ao .. '/(.+)')
 				if not hint then hint = device.name end
 				items[#items + 1] = {
-					title = device.description:sub(1, 7) == 'Default' and t('Default %s', device.description:sub(9)) or
-						t(device.description),
+					title = device.description:sub(1, 7) == 'Default'
+						and t('Default %s', device.description:sub(9))
+						or device.description,
 					hint = hint,
 					active = device.name == current_device,
 					value = device.name,
