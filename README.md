@@ -6,6 +6,7 @@
 
 - [mpv-player/autoload](https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autoload.lua)
 - [mpv-player/autocrop](https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autocrop.lua)
+- [ObserverOfTime/clipshot](https://github.com/ObserverOfTime/mpv-scripts/blob/master/clipshot.lua)
 - [occivink/crop](https://github.com/occivink/mpv-scripts#croplua)
 - [po5/evafast](https://github.com/po5/evafast)
 - [po5/memo](https://github.com/po5/memo)
