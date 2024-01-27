@@ -1,3 +1,7 @@
+---Screenshot the video and copy it to the clipboard
+---@author ObserverOfTime
+---@license 0BSD
+
 ---@class ClipshotOptions
 ---@field name string
 ---@field type string
