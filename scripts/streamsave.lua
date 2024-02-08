@@ -1,8 +1,8 @@
 --[[
 
 streamsave.lua
-Version 0.24.1
-2023-8-29
+Version 0.27.0
+2024-02-08
 https://github.com/Sagnac/streamsave
 
 mpv script aimed at saving live streams and clipping online videos without encoding.
@@ -91,7 +91,10 @@ This is specified without double quote marks in streamsave.conf, e.g. force_titl
 The output_label is still used here and file overwrites are prevented if desired.
 Changing the filename title to the media-title is still possible at runtime by using the revert argument,
 as in the force_extension example.
-The secondary `force` argument is supported as well when passing an extension and not using `revert`.
+The secondary `force` argument is supported as well when not using `revert`.
+Property expansion is supported for all user-set titles. For example:
+`force_title=streamsave_${media-title}` in streamsave.conf, or
+`script-message streamsave-title ${duration}` at runtime.
 
 The range_marks option allows the script to set temporary chapters at A-B loop points.
 If chapters already exist they are stored and cleared whenever any A-B points are set.
@@ -122,9 +125,9 @@ Set piecewise=yes if you want to save a stream in parts automatically, useful fo
 e.g. saving long streams on slow systems. Set autoend to the duration preferred for each output file.
 This feature requires autostart=yes.
 
-mpv's script-message command can be used to change the user options at runtime and
+mpv's script-message command can be used to change settings at runtime and
 temporarily override the output title or file extension.
-Boolean style options (yes/no) can be cycled by omitting the third argument.
+Boolean-style options (yes/no) can be cycled by omitting the third argument.
 If you override the title, the file extension, or the directory, the revert argument can be used
 to set it back to the default value.
 
@@ -146,14 +149,14 @@ local msg = require 'mp.msg'
 
 local unpack = unpack or table.unpack
 
--- default user options
+-- default user settings
 -- change these in streamsave.conf
 local opts = {
     save_directory  = [[]],        -- output file directory
     dump_mode       = "ab",        -- <ab|current|continuous|chapter|segments>
     output_label    = "increment", -- <increment|range|timestamp|overwrite|chapter>
-    force_extension = "no",        -- <no|.ext> extension will be .ext if set
-    force_title     = "no",        -- <no|title> custom title used for the filename
+    force_extension = "",          -- <.ext> extension will be .ext if set
+    force_title     = "",          -- <title> custom title used for the filename
     range_marks     = false,       -- <yes|no> set chapters at A-B loop points?
     track_packets   = false,       -- <yes|no> track HLS packet drops
     autostart       = false,       -- <yes|no> automatically dump cache at start?
@@ -164,35 +167,64 @@ local opts = {
     piecewise       = false,       -- <yes|no> writes stream in parts with autoend
 }
 
-local modes = {
-    ab = true,
-    current = true,
-    continuous = true,
-    chapter = true,
-    segments = true,
+local cycle_modes = {
+    "ab",
+    "current",
+    "continuous",
+    "chapter",
+    "segments"
 }
 
-local labels = {
-    increment = true,
-    range = true,
-    timestamp = true,
-    overwrite = true,
-    chapter = true,
+local modes = {}
+for i, v in ipairs(cycle_modes) do
+    modes[v] = i
+end
+
+local mode_info = {
+    continuous = "Continuous",
+    ab = "A-B loop",
+    current = "Current position",
+    chapter = "Chapter",
+    segments = "Segments",
+    append = {
+        chapter = " (single chapter)",
+        segments = " (all chapters)"
+    }
 }
+
+local cycle_labels = {
+    "increment",
+    "range",
+    "timestamp",
+    "overwrite",
+    "chapter"
+}
+
+local labels = {}
+for i, v in ipairs(cycle_labels) do
+    labels[v] = i
+end
+
+local cycle_mt = {__index = function(t) return t[1] end}
+setmetatable(cycle_modes, cycle_mt)
+setmetatable(cycle_labels, cycle_mt)
 
 -- for internal use
 local file = {
-    name,            -- file name (full path to file)
+    name,            -- file name (path to file)
     path,            -- directory the file is written to
     title,           -- media title
     inc,             -- filename increments
     ext,             -- file extension
+    length,          -- 3-element table: directory, filename, & full path lengths
     loaded,          -- flagged once the initial load has taken place
     pending,         -- number of files pending write completion (max 2)
     queue,           -- cache_write queue in case of multiple write requests
     writing,         -- file writing object returned by the write command
+    subs_off,        -- whether subs were disabled on write due to incompatibility
     quitsec,         -- user specified quit time in seconds
     quit_timer,      -- player quit timer set according to quitsec
+    forced_title,    -- unexpanded user set title
     oldtitle,        -- initialized if title is overridden, allows revert
     oldext,          -- initialized if format is overridden, allows revert
     oldpath,         -- initialized if directory is overriden, allows revert
@@ -255,6 +287,7 @@ local mp4 = {
 
 local title_change
 local container
+local cache_write
 local get_chapters
 local chapter_points
 local reset
@@ -265,10 +298,35 @@ local packet_events
 local observe_cache
 local observe_tracks
 
+local MAX_PATH_LENGTH = 259
+local UNICODE = "[%z\1-\127\194-\244][\128-\191]*"
+
 local function convert_time(value)
     local H, M, S = value:match("^(%d+):([0-5]%d):([0-5]%d)$")
     if H then
         return H*3600 + M*60 + S
+    end
+end
+
+local function enabled(option)
+    return string.len(option) > 0
+end
+
+local function deprecate()
+    local warn = false
+    local options = {"force_extension", "force_title"}
+    for _, option in next, options do
+        if opts[option] == "no" then
+            opts[option] = ""
+            warn = true
+        end
+    end
+    if warn then
+        msg.warn('Deprecation warning: the default setting of "no" has been changed')
+        msg.warn('in favour of an empty string for the following options:')
+        msg.warn(table.concat(options, ", "))
+        msg.warn('Either delete these lines from your streamsave.conf')
+        msg.warn('or assign nothing / leave the value blank.')
     end
 end
 
@@ -299,6 +357,7 @@ local function validate_opts()
             opts.quit = "no"
         end
     end
+    deprecate()
 end
 
 local function append_slash(path)
@@ -309,29 +368,60 @@ local function append_slash(path)
     end
 end
 
+local function normalize(path)
+    -- handle absolute paths
+    if path:match("^/") or path:match("^%a:[\\/]") or path:match("^\\\\") then
+        return path
+    elseif path:match("^\\") then
+        -- path relative to cwd root
+        -- make sure the drive letter and volume separator are counted
+        -- the actual letter doesn't matter as this is only for length measurement
+        return "C:" .. path
+    end
+    -- resolve relative paths
+    path = append_slash(utils.getcwd() or "") .. path:gsub("^%.[\\/]", "")
+    -- relative paths with ../ are resolved by collapsing
+    -- the parent directories iteratively
+    local k = 1
+    while k > 0 do
+        path, k = path:gsub("[\\/][^\\/]+[\\/]+%.%.[\\/]", "/", 1)
+    end
+    return path
+end
+
+local function get_path_length(path)
+    local _, n = path:gsub(UNICODE, "")
+    return n
+end
+
 function update.save_directory()
     if #opts.save_directory == 0 then
         file.path = opts.save_directory
-        return
+    else
+        -- expand mpv meta paths (e.g. ~~/directory)
+        opts.save_directory = append_slash(opts.save_directory)
+        file.path = append_slash(mp.command_native {
+            "expand-path", opts.save_directory
+        })
     end
-    -- expand mpv meta paths (e.g. ~~/directory)
-    opts.save_directory = append_slash(opts.save_directory)
-    file.path = append_slash(mp.command_native{"expand-path", opts.save_directory})
+    file.length = {get_path_length(normalize(file.path))}
 end
 
 function update.force_title()
-    if opts.force_title ~= "no" then
-        file.title = opts.force_title
-    elseif file.title then
-        title_change(_, mp.get_property("media-title"), true)
+    if enabled(opts.force_title) then
+        file.forced_title = opts.force_title
+    elseif file.forced_title then
+        title_change(_, mp.get_property("media-title"))
+    else
+        file.forced_title = ""
     end
 end
 
 function update.force_extension()
-    if opts.force_extension ~= "no" then
+    if enabled(opts.force_extension) then
         file.ext = opts.force_extension
     else
-        container(_, _, true)
+        container()
     end
 end
 
@@ -391,53 +481,43 @@ update_opts{force_title = true, save_directory = true}
 local function mode_switch(value)
     value = value or opts.dump_mode
     if value == "cycle" then
-        if opts.dump_mode == "ab" then
-            value = "current"
-        elseif opts.dump_mode == "current" then
-            value = "continuous"
-        elseif opts.dump_mode == "continuous" then
-            value = "chapter"
-        elseif opts.dump_mode == "chapter" then
-            value = "segments"
-        else
-            value = "ab"
-        end
+        value = cycle_modes[modes[opts.dump_mode] + 1]
     end
-    if value == "continuous" then
-        opts.dump_mode = "continuous"
-        print("Continuous mode")
-        mp.osd_message("Cache write mode: Continuous")
-    elseif value == "ab" then
-        opts.dump_mode = "ab"
-        print("A-B loop mode")
-        mp.osd_message("Cache write mode: A-B loop")
-    elseif value == "current" then
-        opts.dump_mode = "current"
-        print("Current position mode")
-        mp.osd_message("Cache write mode: Current position")
-    elseif value == "chapter" then
-        opts.dump_mode = "chapter"
-        print("Chapter mode (single chapter)")
-        mp.osd_message("Cache write mode: Chapter")
-    elseif value == "segments" then
-        opts.dump_mode = "segments"
-        print("Segments mode (all chapters)")
-        mp.osd_message("Cache write mode: Segments")
-    else
+    if not modes[value] then
         msg.error("Invalid dump mode '" .. value .. "'")
+        return
     end
+    opts.dump_mode = value
+    local mode = mode_info[value]
+    local append = mode_info.append[value] or ""
+    msg.info(mode, "mode" .. append .. ".")
+    mp.osd_message("Cache write mode: " .. mode .. append)
 end
 
 local function sanitize(title)
-    -- Replacement of reserved file name characters on Windows
-    return title:gsub("[\\/:*?\"<>|]", ".")
+    -- guard in case of an empty string
+    if #title == 0 then
+        return "streamsave"
+    end
+    -- replacement of reserved characters
+    title = title:gsub("[\\/:*?\"<>|]", ".")
+    -- avoid outputting dotfiles
+    title = title:gsub("^%.", ",")
+    return title
 end
 
 -- Set the principal part of the file name using the media title
 function title_change(_, media_title, req)
-    if opts.force_title ~= "no" and not req or not media_title then
-        return end
+    if not media_title then
+        file.title = nil
+        return
+    end
+    if enabled(opts.force_title) and not req then
+        file.forced_title = opts.force_title
+        return
+    end
     file.title = sanitize(media_title)
+    file.forced_title = ""
     file.oldtitle = nil
 end
 
@@ -451,7 +531,7 @@ function container(_, _, req)
         observe_tracks()
         file.ext = nil
         return end
-    if opts.force_extension ~= "no" and not req then
+    if enabled(opts.force_extension) and not req then
         file.ext = opts.force_extension
         observe_cache()
         observe_tracks()
@@ -475,48 +555,58 @@ end
 local function format_override(ext, force)
     ext = ext or file.ext
     file.oldext = file.oldext or file.ext
-    if force == "force" then
+    if force == "force" and ext ~= "revert" then
         opts.force_extension = ext
         file.ext = opts.force_extension
-        print("file extension globally forced to " .. file.ext)
+        msg.info("file extension globally forced to", file.ext)
         mp.osd_message("streamsave: file extension globally forced to " .. file.ext)
         return
     end
     if ext == "revert" and file.ext == opts.force_extension then
+        if force == "force" then
+            msg.info("force_extension option reset to default.")
+            opts.force_extension = ""
+        end
         container(_, _, true)
-    elseif ext == "revert" and opts.force_extension ~= "no" then
+    elseif ext == "revert" and enabled(opts.force_extension) then
         file.ext = opts.force_extension
     elseif ext == "revert" then
         file.ext = file.oldext
     else
         file.ext = ext
     end
-    print("file extension changed to " .. file.ext)
+    msg.info("file extension changed to", file.ext)
     mp.osd_message("streamsave: file extension changed to " .. file.ext)
 end
 
 local function title_override(title, force)
     title = title or file.title
     file.oldtitle = file.oldtitle or file.title
-    if force == "force" then
+    if force == "force" and title ~= "revert" then
         opts.force_title = title
-        file.title = opts.force_title
+        file.forced_title = opts.force_title
         opts.output_label = "increment"
-        print("title globally forced to " .. file.title)
-        mp.osd_message("streamsave: title globally forced to " .. file.title)
+        msg.info("title globally forced to", title)
+        mp.osd_message("streamsave: title globally forced to " .. title)
         return
     end
-    if title == "revert" and file.title == opts.force_title then
+    if title == "revert" and enabled(file.forced_title) then
+        if force == "force" then
+            msg.info("force_title option reset to default.")
+            opts.force_title = ""
+        end
         title_change(_, mp.get_property("media-title"), true)
-    elseif title == "revert" and opts.force_title ~= "no" then
-        file.title = opts.force_title
+    elseif title == "revert" and enabled(opts.force_title) then
+        file.forced_title = opts.force_title
     elseif title == "revert" then
         file.title = file.oldtitle
+        file.forced_title = ""
     else
-        file.title = title
+        file.forced_title = title
     end
-    print("title changed to " .. file.title)
-    mp.osd_message("streamsave: title changed to " .. file.title)
+    title = enabled(file.forced_title) and file.forced_title or file.title
+    msg.info("title changed to", title)
+    mp.osd_message("streamsave: title changed to " .. title)
 end
 
 local function path_override(value)
@@ -528,27 +618,17 @@ local function path_override(value)
         opts.save_directory = value
     end
     update.save_directory()
-    print("Output directory changed to " .. file.path)
+    msg.info("Output directory changed to", file.path)
     mp.osd_message("streamsave: directory changed to " .. opts.save_directory)
 end
 
 local function label_override(value)
     if value == "cycle" then
-        if opts.output_label == "increment" then
-            value = "range"
-        elseif opts.output_label == "range" then
-            value = "timestamp"
-        elseif opts.output_label == "timestamp" then
-            value = "overwrite"
-        elseif opts.output_label == "overwrite" then
-            value = "chapter"
-        else
-            value = "increment"
-        end
+        value = cycle_labels[labels[opts.output_label] + 1]
     end
     opts.output_label = value or opts.output_label
     validate_opts()
-    print("File label changed to " .. opts.output_label)
+    msg.info("File label changed to", opts.output_label)
     mp.osd_message("streamsave: label changed to " .. opts.output_label)
 end
 
@@ -560,12 +640,12 @@ local function marks_override(value)
             mp.set_property_native("chapter-list", chapter_list)
         end
         ab_chapters = {}
-        print("Range marks disabled")
+        msg.info("Range marks disabled.")
         mp.osd_message("streamsave: range marks disabled")
     elseif value == "yes" then
         opts.range_marks = true
         chapter_points()
-        print("Range marks enabled")
+        msg.info("Range marks enabled.")
         mp.osd_message("streamsave: range marks enabled")
     else
         msg.error("Invalid input '" .. value .. "'. Use yes or no.")
@@ -577,11 +657,11 @@ local function autostart_override(value)
     value = cycle_bool_on_missing_arg(value, opts.autostart)
     if value == "no" then
         opts.autostart = false
-        print("Autostart disabled")
+        msg.info("Autostart disabled.")
         mp.osd_message("streamsave: autostart disabled")
     elseif value == "yes" then
         opts.autostart = true
-        print("Autostart enabled")
+        msg.info("Autostart enabled.")
         mp.osd_message("streamsave: autostart enabled")
     else
         msg.error("Invalid input '" .. value .. "'. Use yes or no.")
@@ -596,7 +676,7 @@ local function autoend_override(value)
     validate_opts()
     cache.endsec = convert_time(opts.autoend)
     observe_cache()
-    print("Autoend set to " .. opts.autoend)
+    msg.info("Autoend set to", opts.autoend)
     mp.osd_message("streamsave: autoend set to " .. opts.autoend)
 end
 
@@ -605,21 +685,21 @@ local function hostchange_override(value)
     value = cycle_bool_on_missing_arg(value, hostchange)
     if value == "no" then
         opts.hostchange = false
-        print("Hostchange disabled")
+        msg.info("Hostchange disabled.")
         mp.osd_message("streamsave: hostchange disabled")
     elseif value == "yes" then
         opts.hostchange = true
-        print("Hostchange enabled")
+        msg.info("Hostchange enabled.")
         mp.osd_message("streamsave: hostchange enabled")
     elseif value == "on_demand" then
         opts.on_demand = not opts.on_demand
         opts.hostchange = opts.on_demand or opts.hostchange
         local status = opts.on_demand and "enabled" or "disabled"
-        print("Hostchange: On Demand " .. status)
+        msg.info("Hostchange: On Demand", status .. ".")
         mp.osd_message("streamsave: hostchange on_demand " .. status)
     else
         local allowed = "yes, no, or on_demand"
-        msg.error("Invalid input '" .. value .. "'. Use " .. allowed .. ".")
+        msg.error("Invalid input '" .. value .. "'. Use", allowed .. ".")
         mp.osd_message("streamsave: invalid input; use " .. allowed)
         return
     end
@@ -632,7 +712,7 @@ local function quit_override(value)
     opts.quit = value or opts.quit
     validate_opts()
     autoquit()
-    print("Quit set to " .. opts.quit)
+    msg.info("Quit set to", opts.quit)
     mp.osd_message("streamsave: quit set to " .. opts.quit)
 end
 
@@ -641,12 +721,12 @@ local function piecewise_override(value)
     if value == "no" then
         opts.piecewise = false
         cache.part = 0
-        print("Piecewise dumping disabled")
+        msg.info("Piecewise dumping disabled.")
         mp.osd_message("streamsave: piecewise dumping disabled")
     elseif value == "yes" then
         opts.piecewise = true
         cache.endsec = convert_time(opts.autoend)
-        print("Piecewise dumping enabled")
+        msg.info("Piecewise dumping enabled.")
         mp.osd_message("streamsave: piecewise dumping enabled")
     else
         msg.error("Invalid input '" .. value .. "'. Use yes or no.")
@@ -659,11 +739,11 @@ local function packet_override(value)
     value = cycle_bool_on_missing_arg(value, track_packets)
     if value == "no" then
         opts.track_packets = false
-        print("Track packets disabled")
+        msg.info("Track packets disabled.")
         mp.osd_message("streamsave: track packets disabled")
     elseif value == "yes" then
         opts.track_packets = true
-        print("Track packets enabled")
+        msg.info("Track packets enabled.")
         mp.osd_message("streamsave: track packets enabled")
     else
         msg.error("Invalid input '" .. value .. "'. Use yes or no.")
@@ -691,9 +771,39 @@ local function loop_range()
     return loop.range
 end
 
+-- property expansion of user-set titles
+local function expand(title)
+    if enabled(title) then
+        file.title = sanitize(mp.command_native{"expand-text", title})
+    end
+end
+
+local function check_path_length()
+    if file.length[3] > MAX_PATH_LENGTH then
+        msg.warn("Path length exceeds", MAX_PATH_LENGTH, "characters")
+        msg.warn("and the title cannot be truncated further.")
+        msg.warn("The file may fail to write. Use a shorter save_directory path.")
+    end
+end
+
+local function set_path(label, title)
+    local name = title .. label .. file.ext
+    file.length[2] = get_path_length(name)
+    file.length[3] = file.length[1] + file.length[2]
+    return file.path .. name
+end
+
 local function set_name(label, title)
     title = title or file.title
-    return file.path .. title .. label .. file.ext
+    local path = set_path(label, title)
+    local path_length = file.length[3]
+    local diff = math.min(path_length - MAX_PATH_LENGTH, get_path_length(title) - 1)
+    if diff < 1 then
+        return path
+    else -- truncate
+        title = title:gsub(UNICODE:rep(diff) .. "$", "")
+        return set_path(label, title)
+    end
 end
 
 local function increment_filename()
@@ -797,10 +907,10 @@ local function write_chapter(chapter)
             ["title"] = chapter .. ". " .. (not zeroth_chapter
                         and chapter_list[chapter]["title"] or file.title)
         }
-        print("Writing chapter " .. chapter .. " ....")
+        msg.info("Writing chapter", chapter, "....")
         return cache_check(1)
     else
-        msg.error("Chapter " .. chapter .. " not found.")
+        msg.error("Chapter", chapter, "not found.")
     end
 end
 
@@ -826,7 +936,7 @@ local function extract_segments(n, chapter_list)
         ["title"] = n .. ". " .. (chapter_list[n]["title"] or file.title)
     })
     local k = #segments
-    print("Writing out all " .. k .. " chapters to separate files ....")
+    msg.info("Writing out all", k, "chapters to separate files ....")
     return k
 end
 
@@ -852,21 +962,21 @@ local function write_set(mode, file_name, file_pos, quiet)
     return command
 end
 
-local function on_write_finish(cache_write, mode, file_name)
+local function on_write_finish(mode, file_name)
     return function(success, _, command_error)
         command_error = command_error and msg.error(command_error)
         -- check if file is written
         if utils.file_info(file_name) then
             if success then
-                print("Finished writing cache to: " .. file_name)
+                msg.info("Finished writing cache to:", file_name)
             else
-                msg.warn("Possibly broken file created at: " .. file_name)
+                msg.warn("Possibly broken file created at:", file_name)
             end
         else
             msg.error("File not written.")
         end
         if loop.continuous and file.pending == 2 then
-            print("Dumping cache continuously to: " .. file.name)
+            msg.info("Dumping cache continuously to:", file.name)
         end
         file.pending = file.pending - 1
         -- fulfil any write requests now that the pending queue has been serviced
@@ -879,10 +989,18 @@ local function on_write_finish(cache_write, mode, file_name)
             cache_write(unpack(file.queue[1]))
             table.remove(file.queue, 1)
         end
+        -- re-enable subtitles if they were disabled
+        if file.subs_off and file.pending == 0 then
+            if not mp.get_property_number("current-tracks/sub/id") then
+                mp.set_property_number("sid", track.sid)
+            end
+            file.subs_off = false
+        end
     end
 end
 
-local function cache_write(mode, quiet, chapter)
+function cache_write(mode, quiet, chapter)
+    expand(file.forced_title)
     if not (file.title and file.ext) then
         return end
     if file.pending == 2
@@ -930,11 +1048,12 @@ local function cache_write(mode, quiet, chapter)
         file.name = set_name("")
     elseif opts.output_label == "chapter" then
         if segments[1] then
-            file.name = set_name(sanitize(segments[1]["title"]), "")
+            file.name = set_name("", sanitize(segments[1]["title"]))
         else
             increment_filename()
         end
     end
+    check_path_length()
     -- dump cache according to mode
     local file_pos
     file.pending = (file.pending or 0) + 1
@@ -944,10 +1063,25 @@ local function cache_write(mode, quiet, chapter)
     if mode == "current" then
         file_pos = mp.get_property_number("playback-time", 0)
     elseif loop.continuous and file.pending == 1 then
-        print("Dumping cache continuously to: " .. file.name)
+        msg.info("Dumping cache continuously to:", file.name)
+    end
+    -- work around an incompatibility error for certain formats if muxed subs
+    -- are selected by toggling the subtitles
+    local subs = mp.get_property_native("current-tracks/sub", {})
+    local sid = subs["id"]
+    if sid and not subs["external"] then
+        if file.ext == ".mp4" or subs["codec"] == "webvtt-webm"
+        or file.ext == ".webm" and subs["codec"] ~= "webvtt" then
+            msg.warn(
+                "Output format incompatible with internal subtitle codec.\nSubs",
+                "will be disabled while writing and enabled again when finished."
+            )
+            file.subs_off = mp.set_property("sid", "no")
+            track.sid = sid
+        end
     end
     local commands = write_set(mode, file.name, file_pos, quiet)
-    local callback = on_write_finish(cache_write, mode, file.name)
+    local callback = on_write_finish(mode, file.name)
     file.writing = mp.command_native_async(commands, callback)
     return true
 end
@@ -964,12 +1098,12 @@ local function align_cache()
         loop.b_revert = loop.b
         mp.command("ab-loop-align-cache")
         loop.aligned = true
-        print("Adjusted range: " .. loop_range())
+        msg.info("Adjusted range:", loop_range())
     else
         mp.set_property_native("ab-loop-a", loop.a_revert)
         mp.set_property_native("ab-loop-b", loop.b_revert)
         loop.aligned = false
-        print("Loop points reverted to: " .. loop_range())
+        msg.info("Loop points reverted to:", loop_range())
         mp.osd_message("A-B loop: " .. loop.range)
     end
 end
@@ -1211,7 +1345,7 @@ function autoquit()
             function()
                 stop()
                 mp.command("quit")
-                print("Quit after " .. opts.quit)
+                msg.info("Quit after", opts.quit)
             end)
     else
         file.quit_timer["timeout"] = file.quitsec
