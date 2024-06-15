@@ -2,3 +2,6 @@
 *.log
 *.cache
 cache/
+
+/watch_later/**/*
+scripts/remember_windows/last_window_rect.txt
