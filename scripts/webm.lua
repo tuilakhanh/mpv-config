@@ -264,6 +264,7 @@ format_filename = function(startTime, endTime, videoFormat)
     ["%%T"] = mp.get_property("media-title"),
     ["%%M"] = (mp.get_property_native('aid') and not mp.get_property_native('mute') and hasAudioCodec) and '-audio' or '',
     ["%%R"] = (options.scale_height ~= -1) and "-" .. tostring(options.scale_height) .. "p" or "-" .. tostring(mp.get_property_native('height')) .. "p",
+    ["%%mb"] = options.target_filesize / 1000,
     ["%%t%%"] = "%%"
   }
   local filename = options.output_template
@@ -1335,7 +1336,6 @@ do
       end
       cfilter = cfilter .. "[vidtmp]split[topal][vidf];"
       cfilter = cfilter .. "[topal]palettegen[pal];"
-      cfilter = cfilter .. "[vidf]fifo[vidf];"
       cfilter = cfilter .. "[vidf][pal]paletteuse=diff_mode=rectangle"
       if options.gif_dither ~= 6 then
         cfilter = cfilter .. ":dither=bayer:bayer_scale=" .. tostring(options.gif_dither)
@@ -1733,15 +1733,40 @@ end
 local get_playback_options
 get_playback_options = function()
   local ret = { }
+  append_property(ret, "video-rotate")
+  append_property(ret, "ytdl-format")
+  append_property(ret, "deinterlace")
+  return ret
+end
+local get_sub_options
+get_sub_options = function()
+  local ret = { }
   append_property(ret, "sub-ass-override")
   append_property(ret, "sub-ass-force-style")
   append_property(ret, "sub-ass-vsfilter-aspect-compat")
   append_property(ret, "sub-auto")
   append_property(ret, "sub-pos")
   append_property(ret, "sub-delay")
-  append_property(ret, "video-rotate")
-  append_property(ret, "ytdl-format")
-  append_property(ret, "deinterlace")
+  append_property(ret, "sub-scale")
+  append_property(ret, "sub-font")
+  append_property(ret, "sub-font-size")
+  append_property(ret, "sub-bold")
+  append_property(ret, "sub-italic")
+  append_property(ret, "sub-color")
+  append_property(ret, "sub-back-color")
+  append_property(ret, "sub-border-color")
+  append_property(ret, "sub-border-size")
+  append_property(ret, "sub-shadow-color")
+  append_property(ret, "sub-shadow-offset")
+  append_property(ret, "sub-use-margins")
+  append_property(ret, "sub-margin-x")
+  append_property(ret, "sub-margin-y")
+  append_property(ret, "sub-align-x")
+  append_property(ret, "sub-align-y")
+  append_property(ret, "sub-spacing")
+  append_property(ret, "sub-justify")
+  append_property(ret, "sub-gauss")
+  append_property(ret, "sub-gray")
   return ret
 end
 local get_speed_flags
@@ -1814,6 +1839,7 @@ local get_video_encode_flags
 get_video_encode_flags = function(format, region)
   local flags = { }
   append(flags, get_playback_options())
+  append(flags, get_sub_options())
   local filters = get_video_filters(format, region)
   for _index_0 = 1, #filters do
     local f = filters[_index_0]
