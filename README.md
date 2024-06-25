@@ -25,12 +25,12 @@
 - [bjin/mpv-prescalers](https://github.com/bjin/mpv-prescalers/tree/master/gather)
     - RAVU
     - NNEDI
-- [igv/FSRCNNX](https://github.com/igv/FSRCNN-TensorFlow/releases)
-- [HelpSeeker/FSRCNNX-Distort](https://github.com/HelpSeeker/FSRCNN-TensorFlow/releases)
 - [igv/gist](https://gist.github.com/igv)
     - KrigBilateral.glsl
 - [Artoriuz/glsl-chroma-from-luma-prediction](https://github.com/Artoriuz/glsl-chroma-from-luma-prediction)
     - CfL_Prediction.glsl
+- [Artoriuz/ArtCNN](https://github.com/Artoriuz/ArtCNN)
+    - ArtCNN (Compute Version)
 - [an3223/shaders](https://github.com/AN3223/dotfiles/tree/master/.config/mpv/shaders)
     - nlmeans.glsl
     - hdeband.glsl
