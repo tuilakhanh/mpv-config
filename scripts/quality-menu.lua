@@ -1,4 +1,4 @@
--- quality-menu 4.1.0 - 2023-Feb-17
+-- quality-menu 4.1.1 - 2023-Oct-22
 -- https://github.com/christoph-heinrich/mpv-quality-menu
 --
 -- Change the stream video and audio quality on the fly.
@@ -13,6 +13,7 @@ local utils = require 'mp.utils'
 local msg = require 'mp.msg'
 local assdraw = require 'mp.assdraw'
 local opt = require('mp.options')
+local script_name = mp.get_script_name()
 
 local opts = {
     --key bindings
@@ -750,7 +751,7 @@ local function text_menu_open(formats, active_format, menu_type)
         local clip_top = math.floor(margin_top * height + 0.5)
         local clip_bottom = math.floor((1 - margin_bottom) * height + 0.5)
         local clipping_coordinates = '0,' .. clip_top .. ',' .. width .. ',' .. clip_bottom
-        ass:append('{\\rDefault\\q2\\clip(' .. clipping_coordinates .. ')}' .. opts.style_ass_tags)
+        ass:append('{\\rDefault\\an7\\q2\\clip(' .. clipping_coordinates .. ')}' .. opts.style_ass_tags)
 
         if #formats > 0 then
             for i, format in ipairs(formats) do
@@ -914,7 +915,6 @@ end
 
 ---@param menu table
 ---@param menu_type UIState
----@return string
 local function uosc_show_menu(menu, menu_type)
     local json = utils.format_json(menu)
     -- always using update wouldn't work, because it doesn't support the on_close command
@@ -922,7 +922,6 @@ local function uosc_show_menu(menu, menu_type)
     -- while updating the same kind requires `update-menu`
     if open_menu_state == menu_type then mp.commandv('script-message-to', 'uosc', 'update-menu', json)
     else mp.commandv('script-message-to', 'uosc', 'open-menu', json) end
-    return json
 end
 
 ---@param formats Format[]
@@ -936,7 +935,7 @@ local function uosc_menu_open(formats, active_format, menu_type)
         keep_open = true,
         on_close = {
             'script-message-to',
-            'quality_menu',
+            script_name,
             'uosc-menu-closed',
             menu_type.name,
         }
@@ -949,7 +948,7 @@ local function uosc_menu_open(formats, active_format, menu_type)
             active = format.id == active_format,
             value = {
                 'script-message-to',
-                'quality_menu',
+                script_name,
                 menu_type.type .. '-format-set',
                 current_url,
                 format.id,
@@ -965,16 +964,16 @@ local function uosc_menu_open(formats, active_format, menu_type)
         active = active_format == '',
         value = {
             'script-message-to',
-            'quality_menu',
+            script_name,
             menu_type.type .. '-format-set',
             current_url,
             '',
         }
     }
 
-    local json = uosc_show_menu(menu, menu_type)
+    uosc_show_menu(menu, menu_type)
     destructor = function()
-        mp.commandv('script-message-to', 'uosc', 'open-menu', json)
+        mp.commandv('script-message-to', 'uosc', 'close-menu', menu.type)
     end
 end
 
@@ -1099,19 +1098,19 @@ local function loading_message(menu_type)
         if open_menu_state and open_menu_state == menu_type then return end
         local menu = {
             title = menu_type.type_capitalized,
-            items = { { icon = 'spinner', value = 'ignore' } },
+            items = { { icon = 'spinner', selectable = false, value = 'ignore' } },
             type = 'quality-menu-' .. menu_type.name,
             keep_open = true,
             on_close = {
                 'script-message-to',
-                'quality_menu',
+                script_name,
                 'uosc-menu-closed',
                 menu_type.name
             }
         }
-        local json = uosc_show_menu(menu, menu_type)
+        uosc_show_menu(menu, menu_type)
         destructor = function()
-            mp.commandv('script-message-to', 'uosc', 'open-menu', json)
+            mp.commandv('script-message-to', 'uosc', 'close-menu', menu.type)
         end
     else
         osd_message('fetching available ' .. menu_type.type .. ' formats...', 60)
@@ -1268,7 +1267,7 @@ mp.register_script_message('uosc-version', function(version)
         'uosc',
         'overwrite-binding',
         'stream-quality',
-        'script-binding quality_menu/video_formats_toggle'
+        'script-binding ' .. script_name .. '/video_formats_toggle'
     )
     ---@param name string
     mp.register_script_message('uosc-menu-closed', function(name)

@@ -37,7 +37,7 @@ local options = {
 	-- used on the encode. If this is set to <= 0, the video bitrate will be set
 	-- to 0, which might enable constant quality modes, depending on the
 	-- video codec that's used (VP8 and VP9, for example).
-	target_filesize = 2500,
+	target_filesize = 4000,
 	-- If true, will use stricter flags to ensure the resulting file doesn't
 	-- overshoot the target filesize. Not recommended, as constrained quality
 	-- mode should work well, unless you're really having trouble hitting
@@ -57,28 +57,40 @@ local options = {
 	-- gif
 	-- mp3 (libmp3lame)
 	-- and raw (rawvideo/pcm_s16le).
-	output_format = "webm-vp8",
+	output_format = "webm-vp9",
 	twopass = true,
 	-- If set, applies the video filters currently used on the playback to the encode.
 	apply_current_filters = true,
 	-- If set, writes the video's filename to the "Title" field on the metadata.
 	write_filename_on_metadata = false,
 	-- Set the number of encoding threads, for codecs libvpx and libvpx-vp9
-	threads = 4,
+	threads = 8,
 	additional_flags = "",
 	-- Constant Rate Factor (CRF). The value meaning and limits may change,
 	-- from codec to codec. Set to -1 to disable.
 	crf = 10,
+	-- Only used in non-strict mode and only when a target filesize is specified.
+	-- Will attempt to encode multiple times with higher CRF values if the
+	-- initial encode goes over the target filesize.
+	multiple_attempts = true,
+	-- Only used with multiple attempts. If the initial filesize is this many times
+	-- larger than the target, then the multiple attempts are aborted. 
+	-- Useful for indicating when you should go down a resolution.
+	abort_factor = 4,
 	-- Useful for flags that may impact output filesize, such as qmin, qmax etc
 	-- Won't be applied when strict_filesize_constraint is on.
+	-- Here's an example of something you can add:
+	-- 
+	-- --ovcopts-add=slices=8 --ovcopts-add=qcomp=1 --ovcopts-add=row-mt=1
+	-- 
 	non_strict_additional_flags = "",
 	-- Display the encode progress, in %. Requires run_detached to be disabled.
 	-- On Windows, it shows a cmd popup. "auto" will display progress on non-Windows platforms.
-	display_progress = "auto",
+	display_progress = "yes",
 	-- The font size used in the menu. Isn't used for the notifications (started encode, finished encode etc)
 	font_size = 28,
 	margin = 10,
-	message_duration = 5,
+	message_duration = 60,
 	-- gif dither mode, 0-5 for bayer w/ bayer_scale 0-5, 6 for paletteuse default (sierra2_4a)
 	gif_dither = 2,
 	-- Force square pixels on output video
@@ -996,7 +1008,9 @@ do
   local _base_0 = {
     getFlags = function(self)
       return {
-        "--ovcopts-add=threads=" .. tostring(options.threads)
+        "--ovcopts-add=threads=" .. tostring(options.threads),
+        "--ovcopts-add=auto-alt-ref=1",
+        "--ovcopts-add=lag-in-frames=25"
       }
     end
   }
@@ -1005,7 +1019,7 @@ do
   _class_0 = setmetatable({
     __init = function(self)
       self.displayName = "WebM (VP9)"
-      self.supportsTwopass = false
+      self.supportsTwopass = true
       self.videoCodec = "libvpx-vp9"
       self.audioCodec = "libopus"
       self.outputExtension = "webm"
@@ -1504,7 +1518,13 @@ do
       local ass = assdraw.ass_new()
       ass:new_event()
       self:setup_text(ass)
-      ass:append("Encoding (" .. tostring(bold(progressText)) .. ")\\N")
+      if self.attempt > 0 then
+        ass:append("Encoding (" .. tostring(bold(progressText)) .. ")\\NAttempt: " .. tostring(self.attempt) .. "\\NCRF: " .. tostring(self.crf) .. "\\NLast Size: " .. tostring(self.lastSize) .. "\\NTrgt Size: " .. tostring(self.target) .. "\\NRatio: " .. tostring(self.lastSize / self.target))
+      elseif self.crf >= 0 then
+        ass:append("Encoding (" .. tostring(bold(progressText)) .. ")\\NCRF: " .. tostring(self.crf))
+      else
+        ass:append("Encoding (" .. tostring(bold(progressText)) .. ")\\N")
+      end
       return mp.set_osd_ass(window_w, window_h, ass.text)
     end,
     parseLine = function(self, line)
@@ -1554,11 +1574,15 @@ do
   _base_0.__index = _base_0
   setmetatable(_base_0, _parent_0.__base)
   _class_0 = setmetatable({
-    __init = function(self, startTime, endTime)
+    __init = function(self, startTime, endTime, attempt, crf, lastSize, target)
       self.startTime = startTime
       self.endTime = endTime
       self.duration = endTime - startTime
       self.currentTime = startTime
+      self.attempt = attempt
+      self.crf = crf
+      self.lastSize = lastSize
+      self.target = target
     end,
     __base = _base_0,
     __name = "EncodeWithProgress",
@@ -1891,7 +1915,7 @@ find_path = function(startTime, endTime)
   return path, is_stream, is_temporary, startTime, endTime
 end
 local encode
-encode = function(region, startTime, endTime)
+encode = function(region, startTime, endTime, attempt, overrideCrf, lastSize, target)
   local format = formats[options.output_format]
   local originalStartTime = startTime
   local originalEndTime = endTime
@@ -1987,15 +2011,27 @@ encode = function(region, startTime, endTime)
   for token in string.gmatch(options.additional_flags, "[^%s]+") do
     command[#command + 1] = token
   end
+  local crf = options.crf
+  if crf >= 0 and overrideCrf and overrideCrf >= 0 then
+    crf = overrideCrf
+  end
   if not options.strict_filesize_constraint then
     for token in string.gmatch(options.non_strict_additional_flags, "[^%s]+") do
       command[#command + 1] = token
     end
-    if options.crf >= 0 then
+    if crf >= 0 then
       append(command, {
-        "--ovcopts-add=crf=" .. tostring(options.crf)
+        "--ovcopts-add=crf=" .. tostring(crf),
+        "--ovcopts-add=qmin=" .. tostring(crf - 2),
+        "--ovcopts-add=qmax=" .. tostring(crf + 2)
       })
     end
+  else
+    crf = -1
+    append(command, {
+      "--ovcopts-add=qmin=10",
+      "--ovcopts-add=qmax=50"
+    })
   end
   local dir = ""
   if is_stream then
@@ -2028,7 +2064,13 @@ encode = function(region, startTime, endTime)
     append(first_pass_cmdline, {
       "--ovcopts-add=flags=+pass1"
     })
-    message("Starting first pass...")
+    if attempt > 0 then
+      message("Starting first pass...\\NAttempt: " .. tostring(attempt) .. "\\NCRF: " .. tostring(crf) .. "\\NLast Size: " .. tostring(lastSize) .. "\\NTrgt Size: " .. tostring(target) .. "\\NRatio: " .. tostring(lastSize / target))
+    elseif crf >= 0 then
+      message("Starting first pass...\\NCRF: " .. tostring(crf))
+    else
+      message("Starting first pass...")
+    end
     msg.verbose("First-pass command line: ", table.concat(first_pass_cmdline, " "))
     local res = run_subprocess({
       args = first_pass_cmdline,
@@ -2064,11 +2106,11 @@ encode = function(region, startTime, endTime)
         cancellable = false
       })
     else
-      local ewp = EncodeWithProgress(startTime, endTime)
+      local ewp = EncodeWithProgress(startTime, endTime, attempt, crf, lastSize, target)
       res = ewp:startEncode(command)
     end
     if res then
-      message("Encoded successfully! Saved to\\N" .. tostring(bold(out_path)))
+      message("Encoded successfully! Saved to\\N" .. tostring(bold(out_path)) .. "\\NCRF: " .. tostring(crf))
       emit_event("encode-finished", "success")
     else
       message("Encode failed! Check the logs for details.")
@@ -2076,8 +2118,73 @@ encode = function(region, startTime, endTime)
     end
     os.remove(get_pass_logfile_path(out_path))
     if is_temporary then
-      return os.remove(path)
+      os.remove(path)
     end
+    return res
+  end
+end
+local encodeWithTarget
+encodeWithTarget = function(region, startTime, endTime)
+  local attempt = 1
+  local format = formats[options.output_format]
+  local crf = options.crf
+  if options.multiple_attempts and not options.strict_filesize_constraint and format.acceptsBitrate and options.target_filesize > 0 and crf >= 0 then
+    local originalStartTime = startTime
+    local originalEndTime = endTime
+    local path, is_stream, is_temporary
+    path, is_stream, is_temporary, startTime, endTime = find_path(startTime, endTime)
+    local dir = ""
+    if is_stream then
+      dir = parse_directory("~")
+    else
+      local _
+      dir, _ = utils.split_path(path)
+    end
+    if options.output_directory ~= "" then
+      dir = parse_directory(options.output_directory)
+    end
+    local formatted_filename = format_filename(originalStartTime, originalEndTime, format)
+    local out_path = utils.join_path(dir, formatted_filename)
+    local target = options.target_filesize * 1024 * 1024 / 1000
+    local lastSize = 0
+    local lastCrf = crf - 1
+    local res = false
+    while attempt <= 63 do
+      res = encode(region, startTime, endTime, attempt, crf, lastSize, target)
+      if res and crf < 63 then
+        local file = assert(io.open(out_path, "r"))
+        local size = file:seek("end")
+        file:close()
+        if size <= target then
+          return res
+        end
+        local delta = 1
+        if lastSize > 0 then
+          local expansionFactor = math.min(math.log(crf - lastCrf + 2), 1.7)
+          delta = math.max(math.floor(((size - target) / ((lastSize - size) / ((crf - lastCrf) * expansionFactor))) + 0.5), 1)
+        else
+          local ratio = size / target
+          if options.abort_factor > 1 and ratio >= options.abort_factor then
+            message("Aborted!\\NFilesize: " .. tostring(size) .. "\\NTarget: " .. tostring(target) .. "\\NRatio: " .. tostring(ratio) .. "\\NSaved to\\N" .. tostring(bold(out_path)))
+            return res
+          end
+          if ratio > 1.1 then
+            local scale = 1.3161 + 0.3434 * math.log(ratio)
+            local exponent = 1.0058 + 0.4148 * math.log(ratio)
+            delta = math.max(math.floor((crf * scale) - ((crf * scale) / math.pow(ratio, exponent)) + 0.5), 1)
+          end
+        end
+        lastCrf = crf
+        crf = math.min(crf + delta, 63)
+        lastSize = size
+      else
+        return res
+      end
+      attempt = attempt + 1
+    end
+    return res
+  else
+    return encode(region, startTime, endTime, 0)
   end
 end
 local CropPage
@@ -2113,6 +2220,38 @@ do
     setPointB = function(self)
       local posX, posY = mp.get_mouse_pos()
       self.pointB:set_from_screen(posX, posY)
+      if self.visible then
+        return self:draw()
+      end
+    end,
+    snap = function(self)
+      local dimensions = get_video_dimensions()
+      local xa, ya
+      do
+        local _obj_0 = dimensions.top_left
+        xa, ya = _obj_0.x, _obj_0.y
+      end
+      local sa = self.pointA:to_screen()
+      if math.abs(sa.x - xa) < 50 then
+        sa.x = xa
+      end
+      if math.abs(sa.y - ya) < 50 then
+        sa.y = ya
+      end
+      self.pointA:set_from_screen(sa.x, sa.y)
+      local xb, yb
+      do
+        local _obj_0 = dimensions.bottom_right
+        xb, yb = _obj_0.x, _obj_0.y
+      end
+      local sb = self.pointB:to_screen()
+      if math.abs(sb.x - xb) < 50 then
+        sb.x = xb
+      end
+      if math.abs(sb.y - yb) < 50 then
+        sb.y = yb
+      end
+      self.pointB:set_from_screen(sb.x, sb.y)
       if self.visible then
         return self:draw()
       end
@@ -2155,6 +2294,7 @@ do
       ass:append(tostring(bold('Crop:')) .. "\\N")
       ass:append(tostring(bold('1:')) .. " change point A (" .. tostring(self.pointA.x) .. ", " .. tostring(self.pointA.y) .. ")\\N")
       ass:append(tostring(bold('2:')) .. " change point B (" .. tostring(self.pointB.x) .. ", " .. tostring(self.pointB.y) .. ")\\N")
+      ass:append(tostring(bold('s:')) .. " snap to edges\\N")
       ass:append(tostring(bold('r:')) .. " reset to whole screen\\N")
       ass:append(tostring(bold('ESC:')) .. " cancel crop\\N")
       local width, height = math.abs(self.pointA.x - self.pointB.x), math.abs(self.pointA.y - self.pointB.y)
@@ -2179,6 +2319,13 @@ do
         ["2"] = (function()
           local _base_1 = self
           local _fn_0 = _base_1.setPointB
+          return function(...)
+            return _fn_0(_base_1, ...)
+          end
+        end)(),
+        ["s"] = (function()
+          local _base_1 = self
+          local _fn_0 = _base_1.snap
           return function(...)
             return _fn_0(_base_1, ...)
           end
@@ -2278,9 +2425,21 @@ do
       if "bool" == _exp_0 then
         self.value = not self.value
       elseif "int" == _exp_0 then
-        self.value = self.value - self.opts.step
-        if self.opts.min and self.opts.min > self.value then
-          self.value = self.opts.min
+        if self.opts.anchors then
+          local selectedAnchor = self.opts.anchors[1]
+          for i, anchor in ipairs(self.opts.anchors) do
+            if self.value ~= nil and anchor < self.value then
+              selectedAnchor = anchor
+            else
+              break
+            end
+          end
+          self.value = selectedAnchor
+        else
+          self.value = self.value - self.opts.step
+          if self.opts.min and self.opts.min > self.value then
+            self.value = self.opts.min
+          end
         end
       elseif "list" == _exp_0 then
         if self.value > 1 then
@@ -2288,19 +2447,50 @@ do
         end
       end
     end,
+    ctrlLeftKey = function(self)
+      if self.optType == "int" and self.opts.anchors then
+        self.value = self.value - self.opts.step
+        if self.opts.min and self.opts.min > self.value then
+          self.value = self.opts.min
+        end
+      else
+        return self:leftKey()
+      end
+    end,
     rightKey = function(self)
       local _exp_0 = self.optType
       if "bool" == _exp_0 then
         self.value = not self.value
       elseif "int" == _exp_0 then
-        self.value = self.value + self.opts.step
-        if self.opts.max and self.opts.max < self.value then
-          self.value = self.opts.max
+        if self.opts.anchors then
+          local selectedAnchor = self.opts.anchors[1]
+          for i, anchor in ipairs(self.opts.anchors) do
+            selectedAnchor = anchor
+            if self.value ~= nil and anchor > self.value then
+              break
+            end
+          end
+          self.value = selectedAnchor
+        else
+          self.value = self.value + self.opts.step
+          if self.opts.max and self.opts.max < self.value then
+            self.value = self.opts.max
+          end
         end
       elseif "list" == _exp_0 then
         if self.value < #self.opts.possibleValues then
           self.value = self.value + 1
         end
+      end
+    end,
+    ctrlRightKey = function(self)
+      if self.optType == "int" and self.opts.anchors then
+        self.value = self.value + self.opts.step
+        if self.opts.max and self.opts.max < self.value then
+          self.value = self.opts.max
+        end
+      else
+        return self:rightKey()
       end
     end,
     getValue = function(self)
@@ -2417,8 +2607,16 @@ do
       (self:getCurrentOption()):leftKey()
       return self:draw()
     end,
+    ctrlLeftKey = function(self)
+      (self:getCurrentOption()):ctrlLeftKey()
+      return self:draw()
+    end,
     rightKey = function(self)
       (self:getCurrentOption()):rightKey()
+      return self:draw()
+    end,
+    ctrlRightKey = function(self)
+      (self:getCurrentOption()):ctrlRightKey()
       return self:draw()
     end,
     prevOpt = function(self)
@@ -2477,38 +2675,22 @@ do
       self.callback = callback
       self.currentOption = 1
       local scaleHeightOpts = {
-        possibleValues = {
-          {
-            -1,
-            "no"
-          },
-          {
-            144
-          },
-          {
-            240
-          },
-          {
-            360
-          },
-          {
-            480
-          },
-          {
-            540
-          },
-          {
-            720
-          },
-          {
-            1080
-          },
-          {
-            1440
-          },
-          {
-            2160
-          }
+        step = 1,
+        min = -1,
+        altDisplayNames = {
+          [-1] = "no"
+        },
+        anchors = {
+          -1,
+          144,
+          240,
+          360,
+          480,
+          540,
+          720,
+          1080,
+          1440,
+          2160
         }
       }
       local filesizeOpts = {
@@ -2523,6 +2705,13 @@ do
         min = -1,
         altDisplayNames = {
           [-1] = "disabled"
+        }
+      }
+      local abortFactorOpts = {
+        step = 1,
+        min = 1,
+        altDisplayNames = {
+          [1] = "disabled"
         }
       }
       local fpsOpts = {
@@ -2630,7 +2819,7 @@ do
         },
         {
           "scale_height",
-          Option("list", "Scale Height", options.scale_height, scaleHeightOpts)
+          Option("int", "Scale Height (Ctrl to shift by 1)", options.scale_height, scaleHeightOpts)
         },
         {
           "strict_filesize_constraint",
@@ -2647,6 +2836,14 @@ do
         {
           "crf",
           Option("int", "CRF", options.crf, crfOpts)
+        },
+        {
+          "multiple_attempts",
+          Option("bool", "Multiple Attempts", options.multiple_attempts)
+        },
+        {
+          "abort_factor",
+          Option("int", "Abort Factor", options.abort_factor, abortFactorOpts)
         },
         {
           "fps",
@@ -2671,9 +2868,23 @@ do
             return _fn_0(_base_1, ...)
           end
         end)(),
+        ["Ctrl+LEFT"] = (function()
+          local _base_1 = self
+          local _fn_0 = _base_1.ctrlLeftKey
+          return function(...)
+            return _fn_0(_base_1, ...)
+          end
+        end)(),
         ["RIGHT"] = (function()
           local _base_1 = self
           local _fn_0 = _base_1.rightKey
+          return function(...)
+            return _fn_0(_base_1, ...)
+          end
+        end)(),
+        ["Ctrl+RIGHT"] = (function()
+          local _base_1 = self
+          local _fn_0 = _base_1.ctrlRightKey
           return function(...)
             return _fn_0(_base_1, ...)
           end
@@ -2953,7 +3164,7 @@ do
         message("Start time is ahead of end time, aborting")
         return 
       end
-      return encode(self.region, self.startTime, self.endTime)
+      return encodeWithTarget(self.region, self.startTime, self.endTime)
     end
   }
   _base_0.__index = _base_0
