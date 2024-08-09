@@ -18,7 +18,7 @@
 - [Sagnac/streamsave](https://github.com/Sagnac/streamsave)
 - [po5/thumbfast](https://github.com/po5/thumbfast)
 - [tomasklaen/uosc](https://github.com/tomasklaen/uosc)
-- [ekisu/webm](https://github.com/ekisu/mpv-webm)
+- [serenae-fansubs/webm](https://github.com/serenae-fansubs/mpv-webm)
 
 ---
 

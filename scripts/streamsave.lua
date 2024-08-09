@@ -1,8 +1,8 @@
 --[[
 
 streamsave.lua
-Version 0.27.0
-2024-02-08
+Version 0.28.0
+2024-07-18
 https://github.com/Sagnac/streamsave
 
 mpv script aimed at saving live streams and clipping online videos without encoding.
@@ -59,6 +59,8 @@ dump_mode=segments writes out all chapters to individual files.
 
 If you wish to output a single chapter using a numerical input instead you can specify it with a command at runtime:
 script-message streamsave-chapter 7
+
+fallback_write=yes enables initiation of full continuous writes under A-B loop mode if no loop points are set.
 
 The output_label option allows you to choose how the output filename is tagged.
 The default uses iterated step increments for every file output; i.e. file-1.mkv, file-2.mkv, etc.
@@ -147,6 +149,8 @@ local options = require 'mp.options'
 local utils = require 'mp.utils'
 local msg = require 'mp.msg'
 
+-- compatibility with Lua 5.1 (these are present in 5.2+ and LuaJIT)
+local pack = table.pack or function(...) return {n = select("#", ...), ...} end
 local unpack = unpack or table.unpack
 
 -- default user settings
@@ -154,6 +158,7 @@ local unpack = unpack or table.unpack
 local opts = {
     save_directory  = [[]],        -- output file directory
     dump_mode       = "ab",        -- <ab|current|continuous|chapter|segments>
+    fallback_write  = false,       -- <yes|no> full dump if no loop points are set
     output_label    = "increment", -- <increment|range|timestamp|overwrite|chapter>
     force_extension = "",          -- <.ext> extension will be .ext if set
     force_title     = "",          -- <title> custom title used for the filename
@@ -167,18 +172,15 @@ local opts = {
     piecewise       = false,       -- <yes|no> writes stream in parts with autoend
 }
 
-local cycle_modes = {
+local cycle = {}
+
+cycle.modes = {
     "ab",
     "current",
     "continuous",
     "chapter",
-    "segments"
+    "segments",
 }
-
-local modes = {}
-for i, v in ipairs(cycle_modes) do
-    modes[v] = i
-end
 
 local mode_info = {
     continuous = "Continuous",
@@ -192,22 +194,29 @@ local mode_info = {
     }
 }
 
-local cycle_labels = {
+cycle.labels = {
     "increment",
     "range",
     "timestamp",
     "overwrite",
-    "chapter"
+    "chapter",
 }
 
-local labels = {}
-for i, v in ipairs(cycle_labels) do
-    labels[v] = i
+function cycle.set(s)
+    local opt = {}
+    for i, v in ipairs(cycle[s]) do
+        opt[v] = i
+    end
+    local mt = {
+        __index = function(t) return t[1] end,
+        __call  = function(t, v) return t[opt[v] + 1] end
+    }
+    setmetatable(cycle[s], mt)
+    return opt
 end
 
-local cycle_mt = {__index = function(t) return t[1] end}
-setmetatable(cycle_modes, cycle_mt)
-setmetatable(cycle_labels, cycle_mt)
+local modes = cycle.set("modes")
+local labels = cycle.set("labels")
 
 -- for internal use
 local file = {
@@ -312,6 +321,19 @@ local function enabled(option)
     return string.len(option) > 0
 end
 
+local function throw(s, ...)
+    local try = function(...) msg.error(s:format(...)) end
+    if not pcall(try, ...) then
+        -- catch and explicitly cast in case of Lua 5.1 which doesn't coerce
+        -- non-string types while formatting with the string specifier
+        local args = pack(...)
+        for i = 1, args.n do
+            args[i] = tostring(args[i])
+        end
+        try(unpack(args, 1, args.n))
+    end
+end
+
 local function deprecate()
     local warn = false
     local options = {"force_extension", "force_title"}
@@ -330,13 +352,20 @@ local function deprecate()
     end
 end
 
+local function show_possible_settings(t)
+    msg.warn("Possible settings are:")
+    msg.warn(utils.to_string(t))
+end
+
 local function validate_opts()
     if not modes[opts.dump_mode] then
-        msg.error("Invalid dump_mode '" .. opts.dump_mode .. "'")
+        throw("Invalid dump_mode '%s'.", opts.dump_mode)
+        show_possible_settings(cycle.modes)
         opts.dump_mode = "ab"
     end
     if not labels[opts.output_label] then
-        msg.error("Invalid output_label '" .. opts.output_label .. "'")
+        throw("Invalid output_label '%s'.", opts.output_label)
+        show_possible_settings(cycle.labels)
         opts.output_label = "increment"
     end
     if opts.autoend ~= "no" then
@@ -344,16 +373,14 @@ local function validate_opts()
             cache.endsec = convert_time(opts.autoend)
         end
         if not convert_time(opts.autoend) then
-            msg.error("Invalid autoend value '" .. opts.autoend ..
-                     "'. Use HH:MM:SS format.")
+            throw("Invalid autoend value '%s'. Use HH:MM:SS format.", opts.autoend)
             opts.autoend = "no"
         end
     end
     if opts.quit ~= "no" then
         file.quitsec = convert_time(opts.quit)
         if not file.quitsec then
-            msg.error("Invalid quit value '" .. opts.quit ..
-                     "'. Use HH:MM:SS format.")
+            throw("Invalid quit value '%s'. Use HH:MM:SS format.", opts.quit)
             opts.quit = "no"
         end
     end
@@ -382,16 +409,15 @@ local function normalize(path)
     path = append_slash(utils.getcwd() or "") .. path:gsub("^%.[\\/]", "")
     -- relative paths with ../ are resolved by collapsing
     -- the parent directories iteratively
-    local k = 1
-    while k > 0 do
+    local k
+    repeat
         path, k = path:gsub("[\\/][^\\/]+[\\/]+%.%.[\\/]", "/", 1)
-    end
+    until k == 0
     return path
 end
 
 local function get_path_length(path)
-    local _, n = path:gsub(UNICODE, "")
-    return n
+    return (select(2, path:gsub(UNICODE, "")))
 end
 
 function update.save_directory()
@@ -477,14 +503,18 @@ end
 options.read_options(opts, "streamsave", update_opts)
 update_opts{force_title = true, save_directory = true}
 
+local function push(t, v)
+    t[#t + 1] = v
+end
+
 -- dump mode switching
 local function mode_switch(value)
-    value = value or opts.dump_mode
     if value == "cycle" then
-        value = cycle_modes[modes[opts.dump_mode] + 1]
+        value = cycle.modes(opts.dump_mode)
     end
     if not modes[value] then
-        msg.error("Invalid dump mode '" .. value .. "'")
+        throw("Invalid dump mode '%s'.", value)
+        show_possible_settings(cycle.modes)
         return
     end
     opts.dump_mode = value
@@ -521,6 +551,10 @@ function title_change(_, media_title, req)
     file.oldtitle = nil
 end
 
+local function local_mkv(file_format)
+    return not mp.get_property_bool("demuxer-via-network") and file_format == "mkv"
+end
+
 -- Determine container for standard formats
 function container(_, _, req)
     local audio = mp.get_property("audio-codec-name", "none")
@@ -538,7 +572,7 @@ function container(_, _, req)
         return end
     if webm[video] and webm[audio] then
         file.ext = ".webm"
-    elseif mp4[video] and mp4[audio] then
+    elseif mp4[video] and mp4[audio] and not local_mkv(file_format) then
         file.ext = ".mp4"
     else
         file.ext = ".mkv"
@@ -550,6 +584,11 @@ end
 
 local function cycle_bool_on_missing_arg(arg, opt)
     return arg or (not opt and "yes" or "no")
+end
+
+local function throw_on_bool_invalidation(value)
+    throw("Invalid input '%s'. Use yes or no.", value)
+    mp.osd_message("streamsave: invalid input; use yes or no")
 end
 
 local function format_override(ext, force)
@@ -624,12 +663,16 @@ end
 
 local function label_override(value)
     if value == "cycle" then
-        value = cycle_labels[labels[opts.output_label] + 1]
+        value = cycle.labels(opts.output_label)
     end
-    opts.output_label = value or opts.output_label
-    validate_opts()
-    msg.info("File label changed to", opts.output_label)
-    mp.osd_message("streamsave: label changed to " .. opts.output_label)
+    if not labels[value] then
+        throw("Invalid output label '%s'.", value)
+        show_possible_settings(cycle.labels)
+        return
+    end
+    opts.output_label = value
+    msg.info("File label changed to", value)
+    mp.osd_message("streamsave: label changed to " .. value)
 end
 
 local function marks_override(value)
@@ -648,8 +691,7 @@ local function marks_override(value)
         msg.info("Range marks enabled.")
         mp.osd_message("streamsave: range marks enabled")
     else
-        msg.error("Invalid input '" .. value .. "'. Use yes or no.")
-        mp.osd_message("streamsave: invalid input; use yes or no")
+        throw_on_bool_invalidation(value)
     end
 end
 
@@ -664,8 +706,7 @@ local function autostart_override(value)
         msg.info("Autostart enabled.")
         mp.osd_message("streamsave: autostart enabled")
     else
-        msg.error("Invalid input '" .. value .. "'. Use yes or no.")
-        mp.osd_message("streamsave: invalid input; use yes or no")
+        throw_on_bool_invalidation(value)
         return
     end
     observe_cache()
@@ -699,7 +740,7 @@ local function hostchange_override(value)
         mp.osd_message("streamsave: hostchange on_demand " .. status)
     else
         local allowed = "yes, no, or on_demand"
-        msg.error("Invalid input '" .. value .. "'. Use", allowed .. ".")
+        throw("Invalid input '%s'. Use %s.", value, allowed)
         mp.osd_message("streamsave: invalid input; use " .. allowed)
         return
     end
@@ -729,8 +770,7 @@ local function piecewise_override(value)
         msg.info("Piecewise dumping enabled.")
         mp.osd_message("streamsave: piecewise dumping enabled")
     else
-        msg.error("Invalid input '" .. value .. "'. Use yes or no.")
-        mp.osd_message("streamsave: invalid input; use yes or no")
+        throw_on_bool_invalidation(value)
     end
 end
 
@@ -746,8 +786,7 @@ local function packet_override(value)
         msg.info("Track packets enabled.")
         mp.osd_message("streamsave: track packets enabled")
     else
-        msg.error("Invalid input '" .. value .. "'. Use yes or no.")
-        mp.osd_message("streamsave: invalid input; use yes or no")
+        throw_on_bool_invalidation(value)
     end
     if opts.track_packets ~= track_packets then
         packet_events(opts.track_packets)
@@ -930,7 +969,7 @@ local function extract_segments(n, chapter_list)
             ["title"] = "0. " .. file.title
         })
     end
-    table.insert(segments, {
+    push(segments, {
         ["start"] = chapter_list[n]["time"],
         ["end"] = "no",
         ["title"] = n .. ". " .. (chapter_list[n]["title"] or file.title)
@@ -986,7 +1025,7 @@ local function on_write_finish(mode, file_name)
             mp.osd_message("Cache dumping successfully ended.")
         end
         if file.queue and next(file.queue) and not segments[1] then
-            cache_write(unpack(file.queue[1]))
+            cache_write(unpack(file.queue[1], 1, file.queue[1].n))
             table.remove(file.queue, 1)
         end
         -- re-enable subtitles if they were disabled
@@ -1009,8 +1048,9 @@ function cache_write(mode, quiet, chapter)
         file.queue = file.queue or {}
         -- honor extra write requests when pending queue is full
         -- but limit number of outstanding write requests to be fulfilled
-        if #file.queue < 10 then
-            table.insert(file.queue, {mode, quiet, chapter})
+        local queue_size = #file.queue
+        if queue_size < 10 then
+            file.queue[queue_size + 1] = pack(mode, quiet, chapter)
         end
         return end
     range_flip()
@@ -1057,6 +1097,9 @@ function cache_write(mode, quiet, chapter)
     -- dump cache according to mode
     local file_pos
     file.pending = (file.pending or 0) + 1
+    if opts.fallback_write and mode == "ab" and not loop.a and not loop.b then
+        mode = "continuous"
+    end
     loop.continuous = mode == "continuous"
                       or mode == "ab" and loop.a and not loop.b
                       or segments[1] and segments[1]["end"] == "no"
@@ -1110,21 +1153,24 @@ end
 
 function get_chapters()
     local current_chapters = mp.get_property_native("chapter-list", {})
-    local updated -- do the stored chapters reflect the current chapters ?
-    -- make sure master list is up to date
+    -- make sure the master list is up to date
     if not current_chapters[1] or
        not string.match(current_chapters[1]["title"], "^[AB] loop point$")
     then
         chapter_list = current_chapters
-        updated = true
+        return true
+    end
     -- if a script has added chapters after A-B points are set then
     -- add those to the original chapter list
-    elseif #current_chapters > #ab_chapters then
-        for i = #ab_chapters + 1, #current_chapters do
-            table.insert(chapter_list, current_chapters[i])
+    local current_len = #current_chapters
+    local ab_len = #ab_chapters
+    if current_len > ab_len then
+        local last = #chapter_list
+        for i = ab_len + 1, current_len do
+            last = last + 1
+            chapter_list[last] = current_chapters[i]
         end
     end
-    return updated
 end
 
 -- creates chapters at A-B loop points
@@ -1140,26 +1186,21 @@ function chapter_points()
         if not updated then
             mp.set_property_native("chapter-list", chapter_list)
         end
-    else
-        if loop.a then
-            ab_chapters[1] = {
-                title = "A loop point",
-                time = loop.a
-            }
-        end
-        if loop.b and not loop.a then
-            ab_chapters[1] = {
-                title = "B loop point",
-                time = loop.b
-            }
-        elseif loop.b then
-            ab_chapters[2] = {
-                title = "B loop point",
-                time = loop.b
-            }
-        end
-        mp.set_property_native("chapter-list", ab_chapters)
+        return
     end
+    if loop.a then
+        ab_chapters[1] = {
+            title = "A loop point",
+            time = loop.a
+        }
+    end
+    if loop.b then
+        push(ab_chapters, {
+            title = "B loop point",
+            time = loop.b
+        })
+    end
+    mp.set_property_native("chapter-list", ab_chapters)
 end
 
 -- stops writing the file
@@ -1365,7 +1406,7 @@ local function fragment_chapters(packets, cache_time, stamp)
             return
         end
     end
-    table.insert(chapter_list, {
+    push(chapter_list, {
         title = title,
         time = cache_time
     })
