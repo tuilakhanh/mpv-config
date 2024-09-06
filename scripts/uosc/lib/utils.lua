@@ -4,9 +4,7 @@
 ---@alias Rect {ax: number, ay: number, bx: number, by: number, window_drag?: boolean}
 ---@alias Circle {point: Point, r: number, window_drag?: boolean}
 ---@alias Hitbox Rect|Circle
-
---- In place sorting of filenames
----@param filenames string[]
+---@alias ComplexBindingInfo {event: 'down' | 'repeat' | 'up' | 'press'; is_mouse: boolean; canceled: boolean; key_name?: string; key_text?: string;}
 
 -- String sorting
 do
@@ -223,11 +221,6 @@ function get_ray_to_rectangle_distance(ax, ay, bx, by, rect)
 	return closest
 end
 
--- Call function with args if it exists
-function call_maybe(fn, ...)
-	if type(fn) == 'function' then fn(...) end
-end
-
 -- Extracts the properties used by property expansion of that string.
 ---@param str string
 ---@param res { [string] : boolean } | nil
@@ -398,9 +391,20 @@ function has_any_extension(path, extensions)
 	return false
 end
 
----@return string
-function get_default_directory()
-	return mp.command_native({'expand-path', options.default_directory})
+-- Executes mp command defined as a string or an itable, or does nothing if command is any other value.
+-- Returns boolean specifying if command was executed or not.
+---@param command string | string[] | nil | any
+---@return boolean executed `true` if command was executed.
+function execute_command(command)
+	local command_type = type(command)
+	if command_type == 'string' then
+		mp.command(command)
+		return true
+	elseif command_type == 'table' and #command > 0 then
+		mp.command_native(command)
+		return true
+	end
+	return false
 end
 
 -- Serializes path into its semantic parts.
@@ -427,18 +431,17 @@ end
 -- Reads items in directory and splits it into directories and files tables.
 ---@param path string
 ---@param opts? {types?: string[], hidden?: boolean}
----@return string[]|nil files
----@return string[]|nil directories
+---@return string[] files
+---@return string[] directories
+---@return string|nil error
 function read_directory(path, opts)
 	opts = opts or {}
 	local items, error = utils.readdir(path, 'all')
+	local files, directories = {}, {}
 
 	if not items then
-		msg.error('Reading files from "' .. path .. '" failed: ' .. error)
-		return nil, nil
+		return files, directories, 'Reading directory "' .. path .. '" failed. Error: ' .. utils.to_string(error)
 	end
-
-	local files, directories = {}, {}
 
 	for _, item in ipairs(items) do
 		if item ~= '.' and item ~= '..' and (opts.hidden or item:sub(1, 1) ~= '.') then
@@ -467,8 +470,11 @@ function get_adjacent_files(file_path, opts)
 	opts = opts or {}
 	local current_meta = serialize_path(file_path)
 	if not current_meta then return end
-	local files = read_directory(current_meta.dirname, {hidden = opts.hidden})
-	if not files then return end
+	local files, _dirs, error = read_directory(current_meta.dirname, {hidden = opts.hidden})
+	if error then
+		msg.error(error)
+		return
+	end
 	sort_strings(files)
 	local current_file_index
 	local paths = {}
@@ -631,7 +637,7 @@ function delete_file_navigate(delta)
 		if Menu:is_open('open-file') then
 			Elements:maybe('menu', 'delete_value', path)
 		end
-		delete_file(path)
+		if path then delete_file(path) end
 	end
 end
 
@@ -782,18 +788,20 @@ end
 ---@return {[string]: table}|table
 function find_active_keybindings(key)
 	local bindings = mp.get_property_native('input-bindings', {})
-	local active = {} -- map: key-name -> bind-info
+	local active_map = {} -- map: key-name -> bind-info
+	local active_table = {}
 	for _, bind in pairs(bindings) do
 		if bind.owner ~= 'uosc' and bind.priority >= 0 and (not key or bind.key == key) and (
-				not active[bind.key]
-				or (active[bind.key].is_weak and not bind.is_weak)
-				or (bind.is_weak == active[bind.key].is_weak and bind.priority > active[bind.key].priority)
+				not active_map[bind.key]
+				or (active_map[bind.key].is_weak and not bind.is_weak)
+				or (bind.is_weak == active_map[bind.key].is_weak and bind.priority > active_map[bind.key].priority)
 			)
 		then
-			active[bind.key] = bind
+			active_table[#active_table + 1] = bind
+			active_map[bind.key] = bind
 		end
 	end
-	return not key and active or active[key]
+	return key and active_map[key] or active_table
 end
 
 ---@param type 'sub'|'audio'|'video'
