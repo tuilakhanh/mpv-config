@@ -18,6 +18,7 @@
 - [po5/thumbfast](https://github.com/po5/thumbfast)
 - [tomasklaen/uosc](https://github.com/tomasklaen/uosc)
 - [serenae-fansubs/webm](https://github.com/serenae-fansubs/mpv-webm)
+- [Idlusen/mpv-ytsub](https://github.com/Idlusen/mpv-ytsub)
 
 ---
 
