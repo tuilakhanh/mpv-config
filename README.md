@@ -4,7 +4,6 @@
 
 ## Scripts and Shaders Credits
 
-- [mpv-player/autoload](https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autoload.lua)
 - [mpv-player/autocrop](https://github.com/mpv-player/mpv/blob/master/TOOLS/lua/autocrop.lua)
 - [ObserverOfTime/clipshot](https://github.com/ObserverOfTime/mpv-scripts/blob/master/clipshot.lua)
 - [po5/evafast](https://github.com/po5/evafast)
