@@ -12,7 +12,6 @@
 - [natural-harmonia-gropius/quality-menu](https://github.com/natural-harmonia-gropius/mpv-quality-menu)
 - [4e6/mpv-reload](https://github.com/4e6/mpv-reload)
 - [snylonue/slicing_copy](https://github.com/snylonue/mpv_slicing_copy) (Modified)
-- [Eisa01/smartcopypaste](https://github.com/Eisa01/mpv-scripts#smartcopypaste)
 - [jouni/mpv_sponsorblock_minimal](https://codeberg.org/jouni/mpv_sponsorblock_minimal)
 - [Sagnac/streamsave](https://github.com/Sagnac/streamsave)
 - [po5/thumbfast](https://github.com/po5/thumbfast)
