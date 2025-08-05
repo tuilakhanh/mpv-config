@@ -120,8 +120,10 @@ function Timeline:set_from_cursor(fast)
 end
 
 function Timeline:clear_thumbnail()
-	mp.commandv('script-message-to', 'thumbfast', 'clear')
-	self.has_thumbnail = false
+	if self.has_thumbnail then
+		mp.commandv('script-message-to', 'thumbfast', 'clear')
+		self.has_thumbnail = false
+	end
 end
 
 function Timeline:handle_cursor_down()
@@ -165,14 +167,17 @@ function Timeline:on_global_mouse_move()
 end
 
 function Timeline:render()
-	if self.size == 0 then return end
+	if self.size == 0 then
+		self:clear_thumbnail()
+		return
+	end
 
 	local size = self:get_effective_size()
 	local visibility = self:get_visibility()
 	self.is_hovered = false
 
 	if size < 1 then
-		if self.has_thumbnail then self:clear_thumbnail() end
+		self:clear_thumbnail()
 		return
 	end
 
@@ -321,7 +326,7 @@ function Timeline:render()
 					if chapter ~= hovered_chapter then draw_chapter(chapter.time, diamond_radius) end
 					local circle = {point = {x = t2x(chapter.time), y = fay - 1}, r = diamond_radius_hovered}
 					if visibility > 0 then
-						cursor:zone('primary_click', circle, function()
+						cursor:zone('primary_down', circle, function()
 							mp.commandv('seek', chapter.time, 'absolute+exact')
 						end)
 					end
@@ -450,7 +455,8 @@ function Timeline:render()
 				border_color = fg,
 				radius = state.radius,
 			})
-			local thumb_seconds = (state.rebase_start_time == false and state.start_time) and (hovered_seconds - state.start_time) or hovered_seconds
+			local thumb_seconds = (state.rebase_start_time == false and state.start_time) and
+				(hovered_seconds - state.start_time) or hovered_seconds
 			mp.commandv('script-message-to', 'thumbfast', 'thumb', thumb_seconds, thumb_x, thumb_y)
 			self.has_thumbnail, rendered_thumbnail = true, true
 			tooltip_anchor.ay = ay
@@ -475,7 +481,7 @@ function Timeline:render()
 	end
 
 	-- Clear thumbnail
-	if not rendered_thumbnail and self.has_thumbnail then self:clear_thumbnail() end
+	if not rendered_thumbnail then self:clear_thumbnail() end
 
 	return ass
 end

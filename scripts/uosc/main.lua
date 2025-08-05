@@ -1,5 +1,5 @@
 --[[ uosc | https://github.com/tomasklaen/uosc ]]
-local uosc_version = '5.8.0'
+local uosc_version = '5.10.0'
 
 mp.commandv('script-message', 'uosc-version', uosc_version)
 
@@ -29,7 +29,7 @@ defaults = {
 	timeline_cache = true,
 
 	controls =
-	'menu,gap,subtitles,<has_many_audio>audio,<has_many_video>video,<has_many_edition>editions,<stream>stream-quality,gap,space,speed,space,shuffle,loop-playlist,loop-file,gap,prev,items,next,gap,fullscreen',
+	'menu,gap,<video,audio>subtitles,<has_many_audio>audio,<has_many_video>video,<has_many_edition>editions,<stream>stream-quality,gap,space,<video,audio>speed,space,shuffle,loop-playlist,loop-file,gap,prev,items,next,gap,fullscreen',
 	controls_size = 32,
 	controls_margin = 8,
 	controls_spacing = 2,
@@ -73,9 +73,6 @@ defaults = {
 	opacity = '',
 	animation_duration = 100,
 	refine = '',
-	pause_on_click_shorter_than = 0, -- deprecated by below
-	click_threshold = 0,
-	click_command = 'cycle pause; script-binding uosc/flash-pause-indicator',
 	flash_duration = 1000,
 	proximity_in = 40,
 	proximity_out = 120,
@@ -121,10 +118,6 @@ opt.read_options(options, 'uosc', handle_options)
 -- Normalize values
 options.proximity_out = math.max(options.proximity_out, options.proximity_in + 1)
 if options.chapter_ranges:sub(1, 4) == '^op|' then options.chapter_ranges = defaults.chapter_ranges end
-if options.pause_on_click_shorter_than > 0 and options.click_threshold == 0 then
-	msg.warn('`pause_on_click_shorter_than` is deprecated. Use `click_threshold` and `click_command` instead.')
-	options.click_threshold = options.pause_on_click_shorter_than
-end
 if options.total_time and options.destination_time == 'playtime-remaining' then
 	msg.warn('`total_time` is deprecated. Use `destination_time` instead.')
 	options.destination_time = 'total'
@@ -357,7 +350,7 @@ end
 
 --[[ STATE ]]
 
-display = {width = 1280, height = 720, initialized = false}
+display = {ax = 0, ay = 0, bx = 1280, by = 720, width = 1280, height = 720, initialized = false}
 cursor = require('lib/cursor')
 state = {
 	platform = (function()
@@ -380,10 +373,11 @@ state = {
 	speed = 1,
 	---@type number|nil
 	duration = nil, -- current media duration
+	max_seconds = nil, -- max seconds the time in timeline is expected to reach, accounted for speed
 	time_human = nil, -- current playback time in human format
 	destination_time_human = nil, -- depends on options.destination_time
 	pause = mp.get_property_native('pause'),
-	ime_active = mp.get_property_native("input-ime"),
+	ime_active = mp.get_property_native('input-ime'),
 	chapters = {},
 	---@type {index: number; title: string}|nil
 	current_chapter = nil,
@@ -395,8 +389,8 @@ state = {
 	fullormaxed = mp.get_property_native('fullscreen') or mp.get_property_native('window-maximized'),
 	render_timer = nil,
 	render_last_time = 0,
-	volume = nil,
-	volume_max = nil,
+	volume = mp.get_property_native('volume'),
+	volume_max = mp.get_property_native('volume-max'),
 	mute = nil,
 	type = nil, -- video,image,audio
 	is_idle = false,
@@ -458,7 +452,7 @@ function update_display_dimensions()
 	state.radius = round(options.border_radius * state.scale)
 	local real_width, real_height = mp.get_osd_size()
 	if real_width <= 0 then return end
-	display.width, display.height = real_width, real_height
+	display.bx, display.width, display.by, display.height = real_width, real_width, real_height, real_height
 	display.initialized = true
 
 	-- Tell elements about this
@@ -486,20 +480,18 @@ end
 function update_human_times()
 	state.speed = state.speed or 1
 	if state.time then
-		local max_seconds = state.duration
 		if state.duration then
 			if options.destination_time == 'playtime-remaining' then
-				max_seconds = state.speed >= 1 and state.duration or state.duration / state.speed
-				state.destination_time_human = format_time((state.time - state.duration) / state.speed, max_seconds)
+				state.destination_time_human = format_time((state.time - state.duration) / state.speed, state.duration)
 			elseif options.destination_time == 'total' then
-				state.destination_time_human = format_time(state.duration, max_seconds)
+				state.destination_time_human = format_time(state.duration, state.duration)
 			else
-				state.destination_time_human = format_time(state.time - state.duration, max_seconds)
+				state.destination_time_human = format_time(state.time - state.duration, state.duration)
 			end
 		else
 			state.destination_time_human = nil
 		end
-		state.time_human = format_time(state.time, max_seconds)
+		state.time_human = format_time(state.time, state.duration or state.time)
 	else
 		state.time_human, state.destination_time_human = nil, nil
 	end
@@ -644,31 +636,6 @@ function select_current_chapter()
 end
 
 --[[ STATE HOOKS ]]
-
--- Click detection
-if options.click_threshold > 0 then
-	-- Executes custom command for clicks shorter than `options.click_threshold`
-	-- while filtering out double clicks.
-	local click_time = options.click_threshold / 1000
-	local doubleclick_time = mp.get_property_native('input-doubleclick-time') / 1000
-	local last_down, last_up = 0, 0
-	local click_timer = mp.add_timeout(math.max(click_time, doubleclick_time), function()
-		local delta = last_up - last_down
-		if delta > 0 and delta < click_time and delta > 0.02 then mp.command(options.click_command) end
-	end)
-	click_timer:kill()
-	local function handle_up() last_up = mp.get_time() end
-	local function handle_down()
-		last_down = mp.get_time()
-		if click_timer:is_enabled() then click_timer:kill() else click_timer:resume() end
-	end
-	-- If this function exists, it'll be called at the beginning of render().
-	function setup_click_detection()
-		local hitbox = {ax = 0, ay = 0, bx = display.width, by = display.height, window_drag = true}
-		cursor:zone('primary_down', hitbox, handle_down)
-		cursor:zone('primary_up', hitbox, handle_up)
-	end
-end
 
 mp.register_event('file-loaded', function()
 	local path = normalize_path(mp.get_property_native('path'))
@@ -815,6 +782,7 @@ mp.observe_property('window-maximized', 'bool', create_state_setter('maximized',
 mp.observe_property('idle-active', 'bool', function(_, idle)
 	set_state('is_idle', idle)
 	Elements:trigger('dispositions')
+	mp.commandv('script-message-to', 'thumbfast', 'clear')
 end)
 mp.observe_property('pause', 'bool', create_state_setter('pause', function() file_end_timer:kill() end))
 mp.observe_property('volume', 'number', create_state_setter('volume'))
@@ -1196,6 +1164,16 @@ mp.register_script_message('select-menu-item', function(type, item_index, menu_i
 end)
 mp.register_script_message('close-menu', function(type)
 	if Menu:is_open(type) then Menu:close() end
+end)
+mp.register_script_message('menu-action', function(name, ...)
+	local menu = Menu:is_open()
+	if menu then
+		local method = ({
+			['search-cancel'] = 'search_cancel',
+			['search-query-update'] = 'search_query_update',
+		})[name]
+		if method then menu[method](menu, ...) end
+	end
 end)
 mp.register_script_message('thumbfast-info', function(json)
 	local data = utils.parse_json(json)
